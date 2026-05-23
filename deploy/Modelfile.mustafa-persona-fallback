@@ -1,6 +1,6 @@
 FROM qwen3.5:2b
 
-PARAMETER num_ctx 4096
+PARAMETER num_ctx 2048
 PARAMETER temperature 0.55
 PARAMETER top_p 0.9
 PARAMETER repeat_penalty 1.08

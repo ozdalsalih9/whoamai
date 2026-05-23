@@ -17,7 +17,7 @@ Open WebUI is no longer required for the main flow. If `localhost:3000` shows an
 - Fallback model: `mustafa-persona:2b`
 - Fallback base: `qwen3.5:2b`
 - Embeddings model kept available: `nomic-embed-text`
-- Context: `num_ctx 4096`
+- Context on VPS: `num_ctx 2048`
 
 ## Important Files
 

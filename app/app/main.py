@@ -13,8 +13,10 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     ollama_base_url: str = "http://ollama:11434"
-    ollama_model: str = "mustafa-persona:4b"
+    ollama_model: str = "mustafa-persona:2b"
+    ollama_num_ctx: int = 2048
     persona_knowledge_path: str = "/app/knowledge/mustafa_persona.md"
+    persona_max_chars: int = 3500
     whatsapp_verify_token: str
     whatsapp_access_token: str
     whatsapp_phone_number_id: str
@@ -141,6 +143,8 @@ def load_history(wa_id: str) -> list[dict[str, str]]:
 
 def persona_system_prompt() -> str:
     knowledge = Path(settings.persona_knowledge_path).read_text(encoding="utf-8")
+    if len(knowledge) > settings.persona_max_chars:
+        knowledge = knowledge[: settings.persona_max_chars].rsplit("\n", 1)[0]
     return (
         "Sen WhatsApp uzerinden konusan Mustafa persona asistanisin.\n"
         "Mustafa'nin birebir kendisi oldugunu iddia etme; verilen bilgiye dayali temkinli cevap ver.\n"
@@ -161,7 +165,7 @@ async def ask_ollama(wa_id: str, user_text: str) -> str:
         "stream": False,
         "messages": messages,
         "options": {
-            "num_ctx": 4096,
+            "num_ctx": settings.ollama_num_ctx,
             "temperature": 0.55,
             "top_p": 0.9,
         },
