@@ -114,6 +114,7 @@ chmod +x deploy/install-vps.sh
 ```
 
 The script installs Docker and Ollama, pulls the models, creates the persona models, and starts the WhatsApp bot.
+It also configures Ollama to listen on `0.0.0.0:11434` so Docker containers can reach it through the host gateway.
 
 After install:
 

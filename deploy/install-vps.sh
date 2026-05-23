@@ -22,6 +22,7 @@ fi
 
 sudo systemctl enable ollama
 sudo systemctl start ollama
+./deploy/configure-ollama-host.sh
 
 if [ ! -f .env ]; then
   cp .env.example .env
