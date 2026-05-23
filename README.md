@@ -11,7 +11,8 @@ Open WebUI is no longer required for the main flow. If `localhost:3000` shows an
 
 ## Current Model Defaults
 
-- Primary model: `mustafa-persona:4b`
+- Default model on 4 vCPU VPS: `mustafa-persona:2b`
+- Higher-quality model: `mustafa-persona:4b`
 - Base model: `qwen3.5:4b`
 - Fallback model: `mustafa-persona:2b`
 - Fallback base: `qwen3.5:2b`

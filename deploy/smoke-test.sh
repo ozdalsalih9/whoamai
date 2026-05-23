@@ -5,7 +5,7 @@ echo "Checking Ollama service..."
 curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
 
 echo "Checking primary persona model..."
-curl -fsS http://127.0.0.1:11434/api/chat \
+curl --max-time 240 -fsS http://127.0.0.1:11434/api/chat \
   -H "Content-Type: application/json" \
   -d '{
     "model": "mustafa-persona:4b",
@@ -14,6 +14,20 @@ curl -fsS http://127.0.0.1:11434/api/chat \
       {
         "role": "user",
         "content": "Mustafa kimdir? Kisa ve temkinli cevap ver."
+      }
+    ]
+  }' >/dev/null
+
+echo "Checking fallback persona model..."
+curl --max-time 180 -fsS http://127.0.0.1:11434/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "mustafa-persona:2b",
+    "stream": false,
+    "messages": [
+      {
+        "role": "user",
+        "content": "Sadece OK yaz."
       }
     ]
   }' >/dev/null
