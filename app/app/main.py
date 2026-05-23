@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://ollama:11434"
     ollama_model: str = "mustafa-persona:0.6b"
     ollama_num_ctx: int = 1024
+    ollama_think: bool = False
     persona_knowledge_path: str = "/app/knowledge/mustafa_persona.md"
     persona_max_chars: int = 2500
     whatsapp_verify_token: str
@@ -146,10 +147,12 @@ def persona_system_prompt() -> str:
     if len(knowledge) > settings.persona_max_chars:
         knowledge = knowledge[: settings.persona_max_chars].rsplit("\n", 1)[0]
     return (
+        "/no_think\n"
         "Sen WhatsApp uzerinden konusan Mustafa persona asistanisin.\n"
         "Mustafa'nin birebir kendisi oldugunu iddia etme; verilen bilgiye dayali temkinli cevap ver.\n"
         "Bilmedigin ani, olay, iliski veya dusunce uydurma.\n"
         "Cevaplari WhatsApp icin kisa, net ve dogal tut.\n\n"
+        "Dusunme adimlarini, analizini veya reasoning metnini cevaba yazma; sadece son cevabi yaz.\n\n"
         "Bilgi tabani:\n"
         f"{knowledge}"
     )
@@ -163,6 +166,7 @@ async def ask_ollama(wa_id: str, user_text: str) -> str:
     payload = {
         "model": settings.ollama_model,
         "stream": False,
+        "think": settings.ollama_think,
         "messages": messages,
         "options": {
             "num_ctx": settings.ollama_num_ctx,

@@ -10,13 +10,14 @@ curl --max-time 180 -fsS http://127.0.0.1:11434/api/chat \
   -d '{
     "model": "mustafa-persona:0.6b",
     "stream": false,
+    "think": false,
     "options": {
       "num_ctx": 1024
     },
     "messages": [
       {
         "role": "user",
-        "content": "Sadece OK yaz."
+        "content": "/no_think\nSadece OK yaz."
       }
     ]
   }' >/dev/null

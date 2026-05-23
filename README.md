@@ -19,6 +19,7 @@ Open WebUI is no longer required for the main flow. If `localhost:3000` shows an
 - Fallback base: `qwen3.5:2b`
 - Embeddings model kept available: `nomic-embed-text`
 - Context on VPS: `num_ctx 1024`
+- Thinking disabled in API calls: `think=false`
 
 ## Important Files
 
