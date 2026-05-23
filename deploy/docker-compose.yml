@@ -13,7 +13,7 @@ services:
       - path: ../.env
         required: false
     environment:
-      OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+      OLLAMA_BASE_URL: "http://172.17.0.1:11434"
     volumes:
       - whoamai-bot-data:/app/data
       - ../knowledge:/app/knowledge:ro

@@ -32,4 +32,15 @@ docker ps --filter "name=whoamai-whatsapp-bot" --filter "status=running" --forma
 echo "Checking WhatsApp bot health endpoint..."
 curl -fsS http://127.0.0.1:8000/health >/dev/null
 
+echo "Checking WhatsApp bot can reach Ollama through Docker host gateway..."
+docker exec whoamai-whatsapp-bot python - <<'PY'
+import os
+import httpx
+
+base_url = os.environ.get("OLLAMA_BASE_URL", "http://172.17.0.1:11434")
+response = httpx.get(f"{base_url}/api/tags", timeout=10)
+response.raise_for_status()
+print(response.json())
+PY
+
 echo "Smoke test passed."
