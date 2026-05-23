@@ -204,7 +204,17 @@ async def ask_ollama(wa_id: str, user_text: str) -> str:
 
 
 async def extract_and_store_memory(user_text: str, assistant_text: str) -> None:
+    print(json.dumps({"event": "memory_task_started"}))
     if not settings.memory_extraction_enabled or memory is None:
+        print(
+            json.dumps(
+                {
+                    "event": "memory_disabled",
+                    "enabled": settings.memory_extraction_enabled,
+                    "memory_ready": memory is not None,
+                }
+            )
+        )
         return
 
     payload = {
@@ -381,9 +391,10 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
             reply = "Şu an local modelden cevap alamıyorum. Birazdan tekrar dener misin?"
             print(json.dumps({"error": str(exc), "wa_id": wa_id}))
         remember(wa_id, "assistant", reply)
+        background_tasks.add_task(extract_and_store_memory, text, reply)
+        print(json.dumps({"event": "memory_task_scheduled", "wa_id": wa_id}))
         try:
             await send_whatsapp_text(wa_id, reply)
-            background_tasks.add_task(extract_and_store_memory, text, reply)
         except httpx.HTTPError:
             pass
 
