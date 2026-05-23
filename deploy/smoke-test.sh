@@ -8,10 +8,10 @@ echo "Checking default lightweight persona model..."
 curl --max-time 180 -fsS http://127.0.0.1:11434/api/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "mustafa-persona:2b",
+    "model": "mustafa-persona:0.6b",
     "stream": false,
     "options": {
-      "num_ctx": 2048
+      "num_ctx": 1024
     },
     "messages": [
       {
@@ -19,14 +19,6 @@ curl --max-time 180 -fsS http://127.0.0.1:11434/api/chat \
         "content": "Sadece OK yaz."
       }
     ]
-  }' >/dev/null
-
-echo "Checking embedding model..."
-curl -fsS http://127.0.0.1:11434/api/embed \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "nomic-embed-text",
-    "input": "Mustafa persona bilgi tabani testi"
   }' >/dev/null
 
 echo "Checking WhatsApp bot container..."

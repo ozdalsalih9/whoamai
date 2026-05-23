@@ -35,16 +35,12 @@ if grep -q "change-this-" .env; then
   exit 1
 fi
 
-ollama pull qwen3.5:4b
-ollama pull qwen3.5:2b
-ollama pull nomic-embed-text
+ollama pull qwen3:0.6b
 
-ollama create mustafa-persona:4b -f deploy/Modelfile.mustafa-persona
-ollama create mustafa-persona:2b -f deploy/Modelfile.mustafa-persona-fallback
+ollama create mustafa-persona:0.6b -f deploy/Modelfile.mustafa-persona-light
 
 docker compose -f deploy/docker-compose.yml up -d
 
 echo "WhatsApp bot health: http://SERVER_IP:8000/health"
 echo "WhatsApp webhook callback: https://YOUR_DOMAIN/webhook/whatsapp"
-echo "Primary model: mustafa-persona:4b"
-echo "Fallback model: mustafa-persona:2b"
+echo "Default lightweight model: mustafa-persona:0.6b"

@@ -13,10 +13,10 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     ollama_base_url: str = "http://ollama:11434"
-    ollama_model: str = "mustafa-persona:2b"
-    ollama_num_ctx: int = 2048
+    ollama_model: str = "mustafa-persona:0.6b"
+    ollama_num_ctx: int = 1024
     persona_knowledge_path: str = "/app/knowledge/mustafa_persona.md"
-    persona_max_chars: int = 3500
+    persona_max_chars: int = 2500
     whatsapp_verify_token: str
     whatsapp_access_token: str
     whatsapp_phone_number_id: str

@@ -11,13 +11,14 @@ Open WebUI is no longer required for the main flow. If `localhost:3000` shows an
 
 ## Current Model Defaults
 
-- Default model on 4 vCPU VPS: `mustafa-persona:2b`
+- Default model on shared 4 vCPU VPS: `mustafa-persona:0.6b`
 - Higher-quality model: `mustafa-persona:4b`
+- Medium fallback model: `mustafa-persona:2b`
 - Base model: `qwen3.5:4b`
 - Fallback model: `mustafa-persona:2b`
 - Fallback base: `qwen3.5:2b`
 - Embeddings model kept available: `nomic-embed-text`
-- Context on VPS: `num_ctx 2048`
+- Context on VPS: `num_ctx 1024`
 
 ## Important Files
 
