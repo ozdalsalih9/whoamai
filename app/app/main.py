@@ -25,9 +25,9 @@ class Settings(BaseSettings):
     chroma_path: str = "/app/data/chroma"
     chroma_collection: str = "mustafa_persona"
     embedding_model: str = "nomic-embed-text"
-    rag_top_k: int = 3
-    rag_max_context_chars: int = 1200
-    rag_min_score: float = 0.25
+    rag_top_k: int = 2
+    rag_max_context_chars: int = 800
+    rag_min_score: float = 0.35
     memory_extraction_enabled: bool = True
     memory_extraction_model: str = "mustafa-persona:0.6b"
     memory_extraction_num_ctx: int = 512
@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     bot_database_path: str = "/app/data/whoamai-bot.db"
     activation_phrase: str = "hey mustafa, başlat"
     stop_phrases: str = "durdur,bitir,kapat"
-    max_history_messages: int = 10
+    max_history_messages: int = 4
 
 
 settings = Settings()
@@ -90,6 +90,12 @@ MEMORY_SIGNAL_WORDS = {
     "kiz arkadasim",
     "suheyla",
 }
+BANNED_REPLY_FRAGMENTS = (
+    "ben bir yapay zeka",
+    "bir yapay zeka",
+    "asistanim",
+    "persona asistani",
+)
 
 
 def normalize_text(value: str) -> str:
@@ -144,10 +150,17 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS sessions (
                 wa_id TEXT PRIMARY KEY,
                 active INTEGER NOT NULL DEFAULT 0,
+                suheyla_mode INTEGER NOT NULL DEFAULT 0,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        if "suheyla_mode" not in columns:
+            connection.execute("ALTER TABLE sessions ADD COLUMN suheyla_mode INTEGER NOT NULL DEFAULT 0")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS messages (
@@ -207,12 +220,35 @@ def set_active(wa_id: str, active: bool) -> None:
         )
 
 
+def is_suheyla_mode(wa_id: str) -> bool:
+    with db() as connection:
+        row = connection.execute("SELECT suheyla_mode FROM sessions WHERE wa_id = ?", (wa_id,)).fetchone()
+        return bool(row and row["suheyla_mode"])
+
+
+def set_suheyla_mode(wa_id: str, active: bool) -> None:
+    with db() as connection:
+        connection.execute(
+            """
+            INSERT INTO sessions (wa_id, active, suheyla_mode, updated_at)
+            VALUES (?, 1, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(wa_id) DO UPDATE SET suheyla_mode = excluded.suheyla_mode, updated_at = CURRENT_TIMESTAMP
+            """,
+            (wa_id, 1 if active else 0),
+        )
+
+
 def remember(wa_id: str, role: str, content: str) -> None:
     with db() as connection:
         connection.execute(
             "INSERT INTO messages (wa_id, role, content) VALUES (?, ?, ?)",
             (wa_id, role, content),
         )
+
+
+def clear_history(wa_id: str) -> None:
+    with db() as connection:
+        connection.execute("DELETE FROM messages WHERE wa_id = ?", (wa_id,))
 
 
 def already_processed(message_id: str) -> bool:
@@ -224,11 +260,11 @@ def already_processed(message_id: str) -> bool:
             return True
 
 
-def load_history(wa_id: str) -> list[dict[str, str]]:
+def load_history(wa_id: str, exclude_latest_user_text: str | None = None) -> list[dict[str, str]]:
     with db() as connection:
         rows = connection.execute(
             """
-            SELECT role, content
+            SELECT id, role, content
             FROM messages
             WHERE wa_id = ?
             ORDER BY id DESC
@@ -236,7 +272,62 @@ def load_history(wa_id: str) -> list[dict[str, str]]:
             """,
             (wa_id, settings.max_history_messages),
         ).fetchall()
-    return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
+    history: list[dict[str, str]] = []
+    excluded = normalize_text(exclude_latest_user_text) if exclude_latest_user_text else None
+    ordered_rows = list(reversed(rows))
+    latest_excluded_id = None
+    if excluded:
+        for row in reversed(ordered_rows):
+            if row["role"] == "user" and normalize_text(str(row["content"])) == excluded:
+                latest_excluded_id = row["id"]
+                break
+
+    for row in ordered_rows:
+        if row["role"] == "assistant":
+            continue
+        content = " ".join(str(row["content"]).split())
+        if not content:
+            continue
+        if latest_excluded_id is not None and row["id"] == latest_excluded_id:
+            continue
+        folded = fold_turkish(content)
+        if len(content) > 280:
+            content = content[:280].rsplit(" ", 1)[0].strip()
+        history.append({"role": row["role"], "content": content})
+    return history
+
+
+def clean_reply(reply: str, user_text: str, suheyla_mode: bool) -> str:
+    cleaned = " ".join(reply.split())
+    if not cleaned:
+        return "Su an cevap uretemedim."
+
+    user_folded = fold_turkish(user_text)
+    allow_suheyla = suheyla_mode or "suheyla" in user_folded
+    sentences = [part.strip() for part in cleaned.replace("!", ".").replace("?", ".").split(".")]
+    kept: list[str] = []
+    seen: set[str] = set()
+
+    for sentence in sentences:
+        if not sentence:
+            continue
+        folded = fold_turkish(sentence)
+        if any(fragment in folded for fragment in BANNED_REPLY_FRAGMENTS):
+            continue
+        if not allow_suheyla and "suheyla" in folded:
+            continue
+        if folded in seen:
+            continue
+        seen.add(folded)
+        kept.append(sentence)
+
+    if not kept:
+        return "Tamam, bunu not aldım."
+
+    result = ". ".join(kept[:3]).strip()
+    if result and result[-1] not in ".!?":
+        result += "."
+    return result
 
 
 async def ask_ollama(wa_id: str, user_text: str) -> str:
@@ -247,8 +338,9 @@ async def ask_ollama(wa_id: str, user_text: str) -> str:
         except Exception as exc:
             print(json.dumps({"event": "rag_retrieve_failed", "error": str(exc)}))
 
-    messages = [{"role": "system", "content": build_system_prompt(rag_context)}]
-    messages.extend(load_history(wa_id))
+    suheyla_mode = is_suheyla_mode(wa_id)
+    messages = [{"role": "system", "content": build_system_prompt(rag_context, suheyla_mode=suheyla_mode)}]
+    messages.extend(load_history(wa_id, exclude_latest_user_text=user_text))
     messages.append({"role": "user", "content": user_text})
 
     payload = {
@@ -267,7 +359,8 @@ async def ask_ollama(wa_id: str, user_text: str) -> str:
         response = await client.post(f"{settings.ollama_base_url}/api/chat", json=payload)
         response.raise_for_status()
         data = response.json()
-        return data.get("message", {}).get("content", "").strip() or "Su an cevap uretemedim."
+        raw_reply = data.get("message", {}).get("content", "").strip()
+        return clean_reply(raw_reply, user_text, suheyla_mode)
 
 
 async def extract_and_store_memory(user_text: str, assistant_text: str) -> None:
@@ -430,6 +523,8 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
 
         if normalized == normalize_text(settings.activation_phrase):
             set_active(wa_id, True)
+            set_suheyla_mode(wa_id, False)
+            clear_history(wa_id)
             remember(wa_id, "user", text)
             reply = "Başlattım. Artık Mustafa persona ile konuşabilirsin."
             remember(wa_id, "assistant", reply)
@@ -441,6 +536,8 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
 
         if normalized in stop_phrases():
             set_active(wa_id, False)
+            set_suheyla_mode(wa_id, False)
+            clear_history(wa_id)
             reply = "Tamam, bu sohbeti durdurdum. Tekrar başlatmak için 'hey mustafa, başlat' yaz."
             try:
                 await send_whatsapp_text(wa_id, reply)
@@ -454,6 +551,12 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
             except httpx.HTTPError:
                 pass
             continue
+
+        folded_text = fold_turkish(text)
+        if "ben suheyla" in folded_text:
+            set_suheyla_mode(wa_id, True)
+        elif "ben mustafa" in folded_text or "suheyla degilim" in folded_text:
+            set_suheyla_mode(wa_id, False)
 
         remember(wa_id, "user", text)
         try:
