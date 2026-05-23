@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     rag_max_context_chars: int = 1200
     rag_min_score: float = 0.25
     memory_extraction_enabled: bool = True
-    memory_extraction_model: str = "mustafa-persona:2b"
+    memory_extraction_model: str = "mustafa-persona:0.6b"
     memory_extraction_num_ctx: int = 512
     memory_max_chars: int = 240
     whatsapp_verify_token: str
@@ -46,11 +46,78 @@ settings = Settings()
 app = FastAPI(title="WhoAmAI WhatsApp Bot")
 memory: ChromaMemory | None = None
 
+TURKISH_CHAR_MAP = str.maketrans(
+    {
+        "\u0131": "i",
+        "\u0130": "I",
+        "\u011f": "g",
+        "\u011e": "G",
+        "\u00fc": "u",
+        "\u00dc": "U",
+        "\u015f": "s",
+        "\u015e": "S",
+        "\u00f6": "o",
+        "\u00d6": "O",
+        "\u00e7": "c",
+        "\u00c7": "C",
+    }
+)
+MEMORY_SIGNAL_WORDS = {
+    "artik",
+    "bundan sonra",
+    "bundan boyle",
+    "yarin",
+    "haftaya",
+    "bugun",
+    "bu gece",
+    "bu hafta",
+    "gidiyorum",
+    "gidecegim",
+    "geliyorum",
+    "gelecegim",
+    "tasiniyorum",
+    "basladim",
+    "baslayacagim",
+    "biraktim",
+    "deniyorum",
+    "deneyecegim",
+    "istiyorum",
+    "sevmiyorum",
+    "seviyorum",
+    "tercih ediyorum",
+    "planim",
+    "projem",
+    "kiz arkadasim",
+    "suheyla",
+}
+
 
 def normalize_text(value: str) -> str:
     value = value.strip().lower()
     value = unicodedata.normalize("NFKC", value)
     return " ".join(value.split())
+
+
+def fold_turkish(value: str) -> str:
+    value = value.translate(TURKISH_CHAR_MAP)
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(character for character in value if not unicodedata.combining(character))
+    return " ".join(value.lower().split())
+
+
+def fallback_memory_candidate(user_text: str) -> str | None:
+    cleaned = " ".join(user_text.strip().split())
+    if len(cleaned) < 8:
+        return None
+
+    folded = fold_turkish(cleaned)
+    if not any(signal in folded for signal in MEMORY_SIGNAL_WORDS):
+        return None
+
+    lowered = cleaned[:1].lower() + cleaned[1:]
+    if lowered.endswith((".", "!", "?")):
+        lowered = lowered[:-1]
+    return f"Kullanici sunu belirtti: {lowered}."
 
 
 def stop_phrases() -> set[str]:
@@ -247,8 +314,12 @@ async def extract_and_store_memory(user_text: str, assistant_text: str) -> None:
     extracted = extracted.strip("\"'` \n\t")
     none_candidate = extracted.upper().strip(".。! ")
     if not extracted or none_candidate == "NONE":
-        print(json.dumps({"event": "memory_skipped"}))
-        return
+        fallback = fallback_memory_candidate(user_text)
+        if fallback is None:
+            print(json.dumps({"event": "memory_skipped"}))
+            return
+        extracted = fallback
+        print(json.dumps({"event": "memory_fallback_used", "memory": extracted}, ensure_ascii=False))
 
     if len(extracted) > settings.memory_max_chars:
         extracted = extracted[: settings.memory_max_chars].rsplit(" ", 1)[0].strip()
