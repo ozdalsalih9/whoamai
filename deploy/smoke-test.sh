@@ -4,21 +4,7 @@ set -euo pipefail
 echo "Checking Ollama service..."
 curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
 
-echo "Checking primary persona model..."
-curl --max-time 240 -fsS http://127.0.0.1:11434/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "mustafa-persona:4b",
-    "stream": false,
-    "messages": [
-      {
-        "role": "user",
-        "content": "Mustafa kimdir? Kisa ve temkinli cevap ver."
-      }
-    ]
-  }' >/dev/null
-
-echo "Checking fallback persona model..."
+echo "Checking default lightweight persona model..."
 curl --max-time 180 -fsS http://127.0.0.1:11434/api/chat \
   -H "Content-Type: application/json" \
   -d '{
