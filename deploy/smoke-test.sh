@@ -4,6 +4,14 @@ set -euo pipefail
 echo "Checking Ollama service..."
 curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
 
+echo "Checking embedding model..."
+curl --max-time 60 -fsS http://127.0.0.1:11434/api/embed \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nomic-embed-text",
+    "input": "Galatasaray ve .NET bilgisi testi"
+  }' >/dev/null
+
 echo "Checking default lightweight persona model..."
 curl --max-time 180 -fsS http://127.0.0.1:11434/api/chat \
   -H "Content-Type: application/json" \

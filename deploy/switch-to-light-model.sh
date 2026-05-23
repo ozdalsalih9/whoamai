@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ollama pull qwen3:0.6b
+ollama pull nomic-embed-text
 ollama create mustafa-persona:0.6b -f deploy/Modelfile.mustafa-persona-light
 
 python3 - <<'PY'
@@ -12,7 +13,6 @@ text = path.read_text()
 replacements = {
     "OLLAMA_MODEL=": "OLLAMA_MODEL=mustafa-persona:0.6b",
     "OLLAMA_NUM_CTX=": "OLLAMA_NUM_CTX=1024",
-    "PERSONA_MAX_CHARS=": "PERSONA_MAX_CHARS=2500",
     "OLLAMA_THINK=": "OLLAMA_THINK=false",
 }
 

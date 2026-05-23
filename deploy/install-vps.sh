@@ -37,6 +37,7 @@ if grep -q "change-this-" .env; then
 fi
 
 ollama pull qwen3:0.6b
+ollama pull nomic-embed-text
 
 ollama create mustafa-persona:0.6b -f deploy/Modelfile.mustafa-persona-light
 

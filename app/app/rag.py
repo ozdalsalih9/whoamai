@@ -1,0 +1,146 @@
+import hashlib
+import re
+from pathlib import Path
+from typing import Any
+
+import chromadb
+import httpx
+
+
+def chunk_markdown(markdown: str, chunk_size: int = 700, overlap: int = 120) -> list[dict[str, str]]:
+    sections = re.split(r"(?m)^##\s+", markdown)
+    chunks: list[dict[str, str]] = []
+
+    for raw_section in sections:
+        section = raw_section.strip()
+        if not section:
+            continue
+
+        lines = section.splitlines()
+        title = lines[0].strip("# ").strip() if lines else "Genel"
+        body = "\n".join(lines[1:]).strip() if len(lines) > 1 else section
+        text = f"## {title}\n{body}".strip()
+
+        start = 0
+        while start < len(text):
+            end = min(start + chunk_size, len(text))
+            chunk_text = text[start:end].strip()
+            if chunk_text:
+                chunks.append({"title": title, "text": chunk_text})
+            if end == len(text):
+                break
+            start = max(0, end - overlap)
+
+    return chunks
+
+
+class OllamaEmbedder:
+    def __init__(self, base_url: str, model: str) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+
+        with httpx.Client(timeout=120) as client:
+            response = client.post(
+                f"{self.base_url}/api/embed",
+                json={"model": self.model, "input": texts},
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        embeddings = data.get("embeddings")
+        if embeddings:
+            return embeddings
+
+        embedding = data.get("embedding")
+        if embedding:
+            return [embedding]
+
+        raise RuntimeError("Ollama embedding response did not include embeddings.")
+
+
+class ChromaMemory:
+    def __init__(
+        self,
+        persist_path: str,
+        collection_name: str,
+        embedder: OllamaEmbedder,
+        max_context_chars: int = 1200,
+        min_score: float = 0.25,
+    ) -> None:
+        self.client = chromadb.PersistentClient(path=persist_path)
+        self.collection = self.client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
+        self.embedder = embedder
+        self.max_context_chars = max_context_chars
+        self.min_score = min_score
+
+    def count(self) -> int:
+        return self.collection.count()
+
+    def reset_from_markdown(self, markdown_path: str) -> int:
+        path = Path(markdown_path)
+        markdown = path.read_text(encoding="utf-8")
+        chunks = chunk_markdown(markdown)
+
+        existing = self.collection.get(include=[])
+        existing_ids = existing.get("ids", [])
+        if existing_ids:
+            self.collection.delete(ids=existing_ids)
+
+        if not chunks:
+            return 0
+
+        documents = [chunk["text"] for chunk in chunks]
+        embeddings = self.embedder.embed(documents)
+        ids = [self._stable_id(path, chunk["title"], chunk["text"]) for chunk in chunks]
+        metadatas = [{"source": path.name, "title": chunk["title"]} for chunk in chunks]
+
+        self.collection.add(
+            ids=ids,
+            documents=documents,
+            embeddings=embeddings,
+            metadatas=metadatas,
+        )
+        return len(chunks)
+
+    def retrieve(self, query: str, top_k: int = 3) -> str:
+        if self.count() == 0:
+            return ""
+
+        query_embedding = self.embedder.embed([query])[0]
+        result = self.collection.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+            include=["documents", "distances", "metadatas"],
+        )
+
+        documents = result.get("documents", [[]])[0]
+        distances = result.get("distances", [[]])[0]
+        metadatas = result.get("metadatas", [[]])[0]
+
+        selected: list[str] = []
+        total_chars = 0
+        for document, distance, metadata in zip(documents, distances, metadatas):
+            score = max(0.0, 1.0 - float(distance))
+            if score < self.min_score:
+                continue
+
+            title = metadata.get("title", "Bağlam") if isinstance(metadata, dict) else "Bağlam"
+            entry = f"[{title} | skor={score:.2f}]\n{document.strip()}"
+            if total_chars + len(entry) > self.max_context_chars:
+                break
+            selected.append(entry)
+            total_chars += len(entry)
+
+        return "\n\n".join(selected)
+
+    @staticmethod
+    def _stable_id(path: Path, title: str, text: str) -> str:
+        digest = hashlib.sha256(f"{path.name}:{title}:{text}".encode("utf-8")).hexdigest()
+        return digest[:32]

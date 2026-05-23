@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY app/app /app/app
 COPY knowledge /app/knowledge
+COPY scripts /app/scripts
 
 EXPOSE 8000
 

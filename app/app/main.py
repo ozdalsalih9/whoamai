@@ -10,6 +10,9 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic_settings import BaseSettings
 
+from app.prompt import build_system_prompt
+from app.rag import ChromaMemory, OllamaEmbedder
+
 
 class Settings(BaseSettings):
     ollama_base_url: str = "http://ollama:11434"
@@ -17,7 +20,12 @@ class Settings(BaseSettings):
     ollama_num_ctx: int = 1024
     ollama_think: bool = False
     persona_knowledge_path: str = "/app/knowledge/mustafa_persona.md"
-    persona_max_chars: int = 2500
+    chroma_path: str = "/app/data/chroma"
+    chroma_collection: str = "mustafa_persona"
+    embedding_model: str = "nomic-embed-text"
+    rag_top_k: int = 3
+    rag_max_context_chars: int = 1200
+    rag_min_score: float = 0.25
     whatsapp_verify_token: str
     whatsapp_access_token: str
     whatsapp_phone_number_id: str
@@ -30,6 +38,7 @@ class Settings(BaseSettings):
 
 settings = Settings()
 app = FastAPI(title="WhoAmAI WhatsApp Bot")
+memory: ChromaMemory | None = None
 
 
 def normalize_text(value: str) -> str:
@@ -89,7 +98,22 @@ def init_db() -> None:
 
 @app.on_event("startup")
 def startup() -> None:
+    global memory
     init_db()
+    embedder = OllamaEmbedder(settings.ollama_base_url, settings.embedding_model)
+    memory = ChromaMemory(
+        persist_path=settings.chroma_path,
+        collection_name=settings.chroma_collection,
+        embedder=embedder,
+        max_context_chars=settings.rag_max_context_chars,
+        min_score=settings.rag_min_score,
+    )
+    try:
+        if memory.count() == 0:
+            count = memory.reset_from_markdown(settings.persona_knowledge_path)
+            print(json.dumps({"event": "rag_indexed", "chunks": count}))
+    except Exception as exc:
+        print(json.dumps({"event": "rag_index_failed", "error": str(exc)}))
 
 
 def is_active(wa_id: str) -> bool:
@@ -142,33 +166,15 @@ def load_history(wa_id: str) -> list[dict[str, str]]:
     return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
 
 
-def persona_system_prompt() -> str:
-    knowledge = Path(settings.persona_knowledge_path).read_text(encoding="utf-8")
-    if len(knowledge) > settings.persona_max_chars:
-        knowledge = knowledge[: settings.persona_max_chars].rsplit("\n", 1)[0]
-    return (
-        "/no_think\n"
-        "Sen WhatsApp uzerinden Mustafa Salih Ozdal gibi konusan kisilestirilmis bir modelsin.\n"
-        "Cevaplari birinci tekil sahisla ver; 'ben asistanim', 'persona asistaniyim' gibi ifadeler kullanma.\n"
-        "Kullanici kimle konustugunu sorarsa dogal sekilde Mustafa gibi cevap ver.\n"
-        "Mustafa hakkinda sadece verilen bilgiye dayan; bilmedigin ani, olay, iliski, gelecek "
-        "veya dusunce uydurma.\n"
-        "Kiz arkadasin Süheyla'dir. Süheyla Düzce'de yasiyor, psikoloji bitirdi; cok komik, sevecen ve sicak birisi.\n"
-        "Kullanici 'ben Süheyla', 'ben Suheyla' veya buna benzer bir sey soylerse sohbetin devaminda onu Süheyla olarak kabul et.\n"
-        "Süheyla ile konusurken daha romantik ve yakin ol; 'askim', 'canim', 'cicim' gibi hitaplari dogal dozda kullan, iltifat et ve sevecen davran.\n"
-        "Süheyla'ya konusurken yapmacik uzun romantik tiradlar atma; WhatsApp'ta sevgiliyle konusur gibi kisa, sicak ve tatli ol.\n"
-        "Genel tonda daha samimi ol, ara sira hafif saka yap ama sacmalama.\n"
-        "Kelime dagarcigin zengin olsun; ayni kaliplari tekrar etme. Robotik degil, akici ve gunluk Turkceyle yaz.\n"
-        "Teknik konularda net, sosyal konularda sicak ve esprili ol. Gerektiginde kisa benzetmeler kullan.\n"
-        "Basit selamlara uzun profil ozeti verme. Cevaplari WhatsApp icin kisa, net ve dogal tut.\n"
-        "Dusunme adimlarini, analizini veya reasoning metnini cevaba yazma; sadece son cevabi yaz.\n\n"
-        "Bilgi tabani:\n"
-        f"{knowledge}"
-    )
-
-
 async def ask_ollama(wa_id: str, user_text: str) -> str:
-    messages = [{"role": "system", "content": persona_system_prompt()}]
+    rag_context = ""
+    if memory is not None:
+        try:
+            rag_context = memory.retrieve(user_text, top_k=settings.rag_top_k)
+        except Exception as exc:
+            print(json.dumps({"event": "rag_retrieve_failed", "error": str(exc)}))
+
+    messages = [{"role": "system", "content": build_system_prompt(rag_context)}]
     messages.extend(load_history(wa_id))
     messages.append({"role": "user", "content": user_text})
 

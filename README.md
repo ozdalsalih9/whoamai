@@ -5,7 +5,7 @@ This project runs a personal Mustafa persona bot over WhatsApp using:
 - Ollama for local LLM inference
 - Meta WhatsApp Cloud API for WhatsApp messages
 - A small FastAPI webhook service
-- Persona prompt plus `knowledge/mustafa_persona.md`
+- ChromaDB RAG over `knowledge/mustafa_persona.md`
 
 Open WebUI is no longer required for the main flow. If `localhost:3000` shows an Open WebUI admin screen, that is from the earlier UI approach and can be ignored for the WhatsApp bot.
 
@@ -20,6 +20,15 @@ Open WebUI is no longer required for the main flow. If `localhost:3000` shows an
 - Embeddings model kept available: `nomic-embed-text`
 - Context on VPS: `num_ctx 1024`
 - Thinking disabled in API calls: `think=false`
+- Embeddings: `nomic-embed-text`
+- Vector DB: ChromaDB in `/app/data/chroma`
+
+## Memory Architecture
+
+- Core prompt is static and small: identity, tone, Süheyla rules, and few-shot WhatsApp examples.
+- Dynamic state is injected on every message: current date/time and mood.
+- Markdown knowledge is chunked into ChromaDB and retrieved only when semantically relevant.
+- WhatsApp stays as the only user interface.
 
 To try the smarter but heavier 2B model on the VPS:
 
@@ -135,6 +144,13 @@ After install:
 ```bash
 chmod +x deploy/smoke-test.sh
 ./deploy/smoke-test.sh
+```
+
+If `knowledge/mustafa_persona.md` changes, rebuild the Chroma index:
+
+```bash
+chmod +x deploy/reindex-knowledge.sh
+./deploy/reindex-knowledge.sh
 ```
 
 ## HTTPS Requirement
