@@ -1,0 +1,8 @@
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: whoamai-cloudflared
+    restart: unless-stopped
+    depends_on:
+      - whatsapp-bot
+    command: tunnel --no-autoupdate --url http://whatsapp-bot:8000

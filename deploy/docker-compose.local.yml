@@ -1,0 +1,32 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: whoamai-ollama
+    restart: unless-stopped
+    ports:
+      - "11435:11434"
+    volumes:
+      - whoamai-ollama:/root/.ollama
+
+  whatsapp-bot:
+    build:
+      context: ..
+      dockerfile: app/Dockerfile
+    container_name: whoamai-whatsapp-bot
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      OLLAMA_BASE_URL: "http://ollama:11434"
+    volumes:
+      - whoamai-bot-data:/app/data
+      - ../knowledge:/app/knowledge:ro
+
+volumes:
+  whoamai-ollama:
+  whoamai-bot-data:

@@ -1,0 +1,22 @@
+services:
+  whatsapp-bot:
+    build:
+      context: ..
+      dockerfile: app/Dockerfile
+    container_name: whoamai-whatsapp-bot
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+    volumes:
+      - whoamai-bot-data:/app/data
+      - ../knowledge:/app/knowledge:ro
+
+volumes:
+  whoamai-bot-data:
