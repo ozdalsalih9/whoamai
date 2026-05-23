@@ -21,6 +21,20 @@ Open WebUI is no longer required for the main flow. If `localhost:3000` shows an
 - Context on VPS: `num_ctx 1024`
 - Thinking disabled in API calls: `think=false`
 
+To try the smarter but heavier 2B model on the VPS:
+
+```bash
+chmod +x deploy/switch-to-medium-model.sh
+./deploy/switch-to-medium-model.sh
+```
+
+To return to the lighter model:
+
+```bash
+chmod +x deploy/switch-to-light-model.sh
+./deploy/switch-to-light-model.sh
+```
+
 ## Important Files
 
 - `app/app/main.py`: WhatsApp webhook and Ollama chat bridge.
