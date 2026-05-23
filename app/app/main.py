@@ -199,7 +199,20 @@ async def send_whatsapp_text(to: str, text: str) -> None:
     }
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            print(
+                json.dumps(
+                    {
+                        "error": "whatsapp_send_failed",
+                        "status_code": exc.response.status_code,
+                        "response": exc.response.text,
+                        "wa_id": to,
+                    }
+                )
+            )
+            raise
 
 
 def extract_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
@@ -257,7 +270,10 @@ async def receive_webhook(request: Request) -> dict[str, str]:
         normalized = normalize_text(text)
 
         if message["type"] != "text":
-            await send_whatsapp_text(wa_id, "Simdilik sadece yazili mesajlara cevap verebiliyorum.")
+            try:
+                await send_whatsapp_text(wa_id, "Simdilik sadece yazili mesajlara cevap verebiliyorum.")
+            except httpx.HTTPError:
+                pass
             continue
 
         if normalized == normalize_text(settings.activation_phrase):
@@ -265,17 +281,26 @@ async def receive_webhook(request: Request) -> dict[str, str]:
             remember(wa_id, "user", text)
             reply = "Başlattım. Artık Mustafa persona ile konuşabilirsin."
             remember(wa_id, "assistant", reply)
-            await send_whatsapp_text(wa_id, reply)
+            try:
+                await send_whatsapp_text(wa_id, reply)
+            except httpx.HTTPError:
+                pass
             continue
 
         if normalized in stop_phrases():
             set_active(wa_id, False)
             reply = "Tamam, bu sohbeti durdurdum. Tekrar başlatmak için 'hey mustafa, başlat' yaz."
-            await send_whatsapp_text(wa_id, reply)
+            try:
+                await send_whatsapp_text(wa_id, reply)
+            except httpx.HTTPError:
+                pass
             continue
 
         if not is_active(wa_id):
-            await send_whatsapp_text(wa_id, "Başlamak için 'hey mustafa, başlat' yaz.")
+            try:
+                await send_whatsapp_text(wa_id, "Başlamak için 'hey mustafa, başlat' yaz.")
+            except httpx.HTTPError:
+                pass
             continue
 
         remember(wa_id, "user", text)
@@ -285,6 +310,9 @@ async def receive_webhook(request: Request) -> dict[str, str]:
             reply = "Şu an local modelden cevap alamıyorum. Birazdan tekrar dener misin?"
             print(json.dumps({"error": str(exc), "wa_id": wa_id}))
         remember(wa_id, "assistant", reply)
-        await send_whatsapp_text(wa_id, reply)
+        try:
+            await send_whatsapp_text(wa_id, reply)
+        except httpx.HTTPError:
+            pass
 
     return {"status": "ok"}
