@@ -109,6 +109,37 @@ class ChromaMemory:
         )
         return len(chunks)
 
+    def add_memory(self, text: str, metadata: dict[str, Any]) -> str:
+        cleaned = " ".join(text.split())
+        if not cleaned:
+            raise ValueError("Memory text cannot be empty.")
+
+        memory_id = self._memory_id(cleaned, str(metadata.get("timestamp", "")))
+        embedding = self.embedder.embed([cleaned])[0]
+        normalized_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if isinstance(value, str | int | float | bool)
+        }
+
+        self.collection.upsert(
+            ids=[memory_id],
+            documents=[cleaned],
+            embeddings=[embedding],
+            metadatas=[normalized_metadata],
+        )
+        return memory_id
+
+    def add_chat_memory(self, text: str, timestamp: str) -> str:
+        return self.add_memory(
+            text,
+            {
+                "source": "whatsapp_chat",
+                "timestamp": timestamp,
+                "title": "WhatsApp Memory",
+            },
+        )
+
     def retrieve(self, query: str, top_k: int = 3) -> str:
         if self.count() == 0:
             return ""
@@ -144,3 +175,8 @@ class ChromaMemory:
     def _stable_id(path: Path, title: str, text: str) -> str:
         digest = hashlib.sha256(f"{path.name}:{title}:{text}".encode("utf-8")).hexdigest()
         return digest[:32]
+
+    @staticmethod
+    def _memory_id(text: str, timestamp: str) -> str:
+        digest = hashlib.sha256(f"whatsapp_chat:{timestamp}:{text}".encode("utf-8")).hexdigest()
+        return f"mem_{digest[:28]}"

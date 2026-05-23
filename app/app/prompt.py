@@ -64,3 +64,20 @@ def build_system_prompt(rag_context: str) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def build_memory_extraction_prompt(user_text: str, assistant_text: str) -> str:
+    return f"""Aşağıdaki konuşmada kullanıcı hakkında kalıcı olarak hatırlanması gereken yeni bir kişisel bilgi, tercih, plan veya olay var mı?
+Eğer varsa bunu tek bir kısa cümle olarak özetle.
+Örnekler:
+- Süheyla yarın İstanbul'a geliyor.
+- Kullanıcı artık React yerine Vue kullanıyor.
+Eğer hatırlanması gereken yeni/önemli bir fakt yoksa sadece NONE yaz.
+
+Kullanıcı mesajı:
+{user_text}
+
+Mustafa cevabı:
+{assistant_text}
+
+Çıktı:"""
