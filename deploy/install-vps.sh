@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source ./deploy/env-utils.sh
+
 if ! command -v curl >/dev/null 2>&1; then
   sudo apt-get update
   sudo apt-get install -y curl
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  sudo apt-get update
+  sudo apt-get install -y python3
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -35,6 +42,8 @@ if grep -q "change-this-" .env; then
   echo ".env still contains placeholder WhatsApp values. Edit .env before starting the bot."
   exit 1
 fi
+
+apply_runtime_env_defaults
 
 ollama pull qwen3:0.6b
 ollama pull nomic-embed-text

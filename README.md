@@ -6,29 +6,26 @@ This project runs a personal Mustafa persona bot over WhatsApp using:
 - Meta WhatsApp Cloud API for WhatsApp messages
 - A small FastAPI webhook service
 - ChromaDB RAG over `knowledge/mustafa_persona.md`
+- SQLite for WhatsApp session state, short chat history, and processed message IDs
 
 Open WebUI is no longer required for the main flow. If `localhost:3000` shows an Open WebUI admin screen, that is from the earlier UI approach and can be ignored for the WhatsApp bot.
 
 ## Current Model Defaults
 
 - Default model on shared 4 vCPU VPS: `mustafa-persona:0.6b`
+- Default base model: `qwen3:0.6b`
+- Medium model: `mustafa-persona:2b`
+- Medium base model: `qwen3.5:2b`
 - Higher-quality model: `mustafa-persona:4b`
-- Medium fallback model: `mustafa-persona:2b`
-- Base model: `qwen3.5:4b`
-- Fallback model: `mustafa-persona:2b`
-- Fallback base: `qwen3.5:2b`
-- Embeddings model kept available: `nomic-embed-text`
-- Context on VPS: `num_ctx 1024`
+- Higher-quality base model: `qwen3.5:4b`
+- Memory extraction model: `mustafa-persona:0.6b`
+- Embeddings model: `nomic-embed-text`
+- Default context on VPS: `num_ctx 1024`
+- Runtime sampling defaults: `temperature=0.35`, `top_p=0.85`, `repeat_penalty=1.03`, `num_predict=180`
+- Optional CPU thread cap: `OLLAMA_NUM_THREAD`, set to physical core count by VPS scripts when missing or `0`
 - Thinking disabled in API calls: `think=false`
-- Embeddings: `nomic-embed-text`
 - Vector DB: ChromaDB in `/app/data/chroma`
-
-## Memory Architecture
-
-- Core prompt is static and small: identity, tone, Süheyla rules, and few-shot WhatsApp examples.
-- Dynamic state is injected on every message: current date/time and mood.
-- Markdown knowledge is chunked into ChromaDB and retrieved only when semantically relevant.
-- WhatsApp stays as the only user interface.
+- Bot database: SQLite in `/app/data/whoamai-bot.db`
 
 To try the smarter but heavier 2B model on the VPS:
 
@@ -44,24 +41,48 @@ chmod +x deploy/switch-to-light-model.sh
 ./deploy/switch-to-light-model.sh
 ```
 
+## Memory Architecture
+
+- Core prompt is static and small: professional persona rules, anti-humanization constraints, Suheyla rules, and few-shot WhatsApp examples.
+- Dynamic state is injected on every message: current date/time, mood, and whether the current sender is treated as Suheyla.
+- Markdown knowledge is chunked into ChromaDB and retrieved only when semantically relevant.
+- New long-term facts from WhatsApp chats can be extracted in the background and inserted into the same Chroma collection with `scope=chat_memory`.
+- Persona Markdown chunks use `scope=persona`; chat memories are retrieved only for the hashed WhatsApp sender.
+- Recent user and assistant messages are kept in SQLite and sent as short conversation history.
+- WhatsApp stays as the only user interface.
+
 ## Important Files
 
-- `app/app/main.py`: WhatsApp webhook and Ollama chat bridge.
-- `knowledge/mustafa_persona.md`: persona knowledge generated from the CSV.
-- `deploy/Modelfile.mustafa-persona`: primary Ollama persona model.
-- `deploy/Modelfile.mustafa-persona-fallback`: fallback Ollama persona model.
+- `app/app/main.py`: WhatsApp webhook, session handling, history, memory extraction, and Ollama chat bridge.
+- `app/app/prompt.py`: core system prompt, dynamic state, and memory extraction prompt.
+- `app/app/rag.py`: ChromaDB indexing, retrieval, and chat memory storage.
+- `knowledge/mustafa_persona.md`: persona knowledge generated from CSV-style source data.
+- `scripts/load_knowledge_to_chroma.py`: manual ChromaDB reindex helper.
+- `scripts/generate_persona_knowledge.py`: generate persona Markdown from CSV.
+- `deploy/Modelfile.mustafa-persona-light`: `mustafa-persona:0.6b` model definition.
+- `deploy/Modelfile.mustafa-persona-medium`: `mustafa-persona:2b` model definition.
+- `deploy/Modelfile.mustafa-persona`: `mustafa-persona:4b` model definition.
+- `deploy/Modelfile.mustafa-persona-fallback`: older 2B fallback model definition.
 - `deploy/docker-compose.local.yml`: local Docker Desktop stack.
 - `deploy/docker-compose.yml`: VPS stack.
-- `.env.example`: required WhatsApp/Ollama settings.
+- `.env.example`: required WhatsApp, Ollama, RAG, and memory settings.
 
 ## How WhatsApp Flow Works
 
-1. A WhatsApp user sends: `hey mustafa, başlat`
-2. The bot activates that sender's session.
-3. Later messages from the same WhatsApp number are sent to Ollama.
-4. Ollama receives the persona system prompt plus `knowledge/mustafa_persona.md`.
-5. The bot replies back to WhatsApp through Meta Cloud API.
-6. The user can stop with `durdur`, `bitir`, or `kapat`.
+1. A WhatsApp user sends: `hey mustafa, baslat`. The Turkish spelling with special characters is also accepted by text folding.
+2. The bot activates that sender's session, clears previous short history, and starts in normal mode.
+3. Later text messages from the same WhatsApp number are sent to Ollama.
+4. The bot builds a system prompt with current Istanbul time, mood, Suheyla mode, and relevant ChromaDB snippets.
+5. The bot sends only the recent user history plus the current message to Ollama, then cleans unsafe or repetitive reply fragments.
+6. The reply is sent back through Meta WhatsApp Cloud API.
+7. A background task tries to extract new durable memories from the user message and stores useful ones in ChromaDB.
+8. The user can stop with `durdur`, `bitir`, or `kapat`.
+
+Notes:
+
+- Non-text WhatsApp messages receive a short text-only warning.
+- Duplicate WhatsApp message IDs are ignored through the `processed_messages` table.
+- If a user says `ben Suheyla`, the session switches to Suheyla mode. Saying `ben Mustafa` or `Suheyla degilim` turns that mode off.
 
 ## Required Meta WhatsApp Values
 
@@ -87,6 +108,38 @@ https://YOUR_DOMAIN/webhook/whatsapp
 
 Use the same `WHATSAPP_VERIFY_TOKEN` in Meta's webhook verification screen. Subscribe the WhatsApp app webhook to message events.
 
+## Main Environment Settings
+
+The defaults in `.env.example` are:
+
+```env
+OLLAMA_BASE_URL=http://ollama:11434
+OLLAMA_MODEL=mustafa-persona:0.6b
+OLLAMA_NUM_CTX=1024
+OLLAMA_THINK=false
+OLLAMA_TEMPERATURE=0.35
+OLLAMA_TOP_P=0.85
+OLLAMA_REPEAT_PENALTY=1.03
+OLLAMA_NUM_PREDICT=180
+OLLAMA_NUM_THREAD=0
+PERSONA_KNOWLEDGE_PATH=/app/knowledge/mustafa_persona.md
+CHROMA_PATH=/app/data/chroma
+CHROMA_COLLECTION=mustafa_persona
+EMBEDDING_MODEL=nomic-embed-text
+RAG_TOP_K=2
+RAG_MAX_CONTEXT_CHARS=800
+RAG_MIN_SCORE=0.35
+MEMORY_EXTRACTION_ENABLED=true
+MEMORY_EXTRACTION_MODEL=mustafa-persona:0.6b
+MEMORY_EXTRACTION_NUM_CTX=512
+MEMORY_MAX_CHARS=240
+BOT_DATABASE_PATH=/app/data/whoamai-bot.db
+ACTIVATION_PHRASE=hey mustafa, baslat
+STOP_PHRASES=durdur,bitir,kapat
+MAX_HISTORY_MESSAGES=6
+PROCESSED_MESSAGE_RETENTION_DAYS=7
+```
+
 ## Local Docker Test
 
 Docker Desktop must be running.
@@ -105,6 +158,13 @@ Local endpoints:
 ```text
 Bot health: http://localhost:8000/health
 Ollama API: http://localhost:11435
+```
+
+The local bootstrap creates the lightweight persona model and also creates the local 4B and 2B persona models from their Modelfiles. If local RAG indexing logs show that the embedding model is missing, pull it once:
+
+```powershell
+docker exec whoamai-ollama ollama pull nomic-embed-text
+docker restart whoamai-whatsapp-bot
 ```
 
 Local WhatsApp webhook testing needs a public HTTPS tunnel, for example Cloudflare Tunnel or ngrok:
@@ -136,8 +196,8 @@ chmod +x deploy/install-vps.sh
 ./deploy/install-vps.sh
 ```
 
-The script installs Docker and Ollama, pulls the models, creates the persona models, and starts the WhatsApp bot.
-It also configures Ollama to listen on `0.0.0.0:11434` so Docker containers can reach it through the host gateway.
+The script installs Docker and Ollama, pulls `qwen3:0.6b` and `nomic-embed-text`, creates `mustafa-persona:0.6b`, and starts the WhatsApp bot.
+It also configures Ollama to listen on `0.0.0.0:11434`, sets runtime model defaults in `.env`, and caps `OLLAMA_NUM_THREAD` to the detected physical CPU core count when the value is missing or `0`.
 
 After install:
 
@@ -152,6 +212,32 @@ If `knowledge/mustafa_persona.md` changes, rebuild the Chroma index:
 chmod +x deploy/reindex-knowledge.sh
 ./deploy/reindex-knowledge.sh
 ```
+
+## Optional GGUF Model Path
+
+The default deployment keeps the current Ollama/Qwen model path. If a GGUF file is later copied to the VPS, create a separate model without changing the default install:
+
+```bash
+cat > deploy/Modelfile.mustafa-persona-gguf <<'EOF'
+FROM /opt/models/your-model.Q4_K_M.gguf
+
+PARAMETER num_ctx 1024
+PARAMETER temperature 0.35
+PARAMETER top_p 0.85
+PARAMETER repeat_penalty 1.03
+PARAMETER num_predict 180
+
+SYSTEM """
+/no_think
+Sen Mustafa Salih Ozdal personasisin. Kisa, net, profesyonel ve dogal cevap ver.
+Bilmedigin detaylari uydurma; duygusal simulasyon veya abartili insanilestirme yapma.
+"""
+EOF
+
+ollama create mustafa-persona:gguf -f deploy/Modelfile.mustafa-persona-gguf
+```
+
+Then set `OLLAMA_MODEL=mustafa-persona:gguf` in `.env` and restart the bot container.
 
 ## HTTPS Requirement
 

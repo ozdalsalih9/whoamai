@@ -3,7 +3,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-import chromadb
 import httpx
 
 
@@ -71,6 +70,8 @@ class ChromaMemory:
         max_context_chars: int = 1200,
         min_score: float = 0.25,
     ) -> None:
+        import chromadb
+
         self.client = chromadb.PersistentClient(path=persist_path)
         self.collection = self.client.get_or_create_collection(
             name=collection_name,
@@ -83,13 +84,21 @@ class ChromaMemory:
     def count(self) -> int:
         return self.collection.count()
 
+    def count_by_scope(self, scope: str) -> int:
+        result = self.collection.get(where={"scope": scope}, include=[])
+        return len(result.get("ids", []))
+
     def reset_from_markdown(self, markdown_path: str) -> int:
         path = Path(markdown_path)
         markdown = path.read_text(encoding="utf-8")
         chunks = chunk_markdown(markdown)
 
-        existing = self.collection.get(include=[])
-        existing_ids = existing.get("ids", [])
+        existing = self.collection.get(include=["metadatas"])
+        existing_ids = [
+            item_id
+            for item_id, metadata in zip(existing.get("ids", []), existing.get("metadatas", []))
+            if self._is_persona_metadata(metadata, path.name)
+        ]
         if existing_ids:
             self.collection.delete(ids=existing_ids)
 
@@ -99,7 +108,7 @@ class ChromaMemory:
         documents = [chunk["text"] for chunk in chunks]
         embeddings = self.embedder.embed(documents)
         ids = [self._stable_id(path, chunk["title"], chunk["text"]) for chunk in chunks]
-        metadatas = [{"source": path.name, "title": chunk["title"]} for chunk in chunks]
+        metadatas = [{"scope": "persona", "source": path.name, "title": chunk["title"]} for chunk in chunks]
 
         self.collection.add(
             ids=ids,
@@ -130,17 +139,33 @@ class ChromaMemory:
         )
         return memory_id
 
-    def add_chat_memory(self, text: str, timestamp: str) -> str:
+    def add_chat_memory(self, text: str, timestamp: str, user_hash: str) -> str:
         return self.add_memory(
             text,
             {
+                "scope": "chat_memory",
                 "source": "whatsapp_chat",
                 "timestamp": timestamp,
                 "title": "WhatsApp Memory",
+                "user_hash": user_hash,
             },
         )
 
+    def retrieve_persona(self, query: str, top_k: int = 3) -> str:
+        return self._retrieve(query, top_k=top_k, where={"scope": "persona"}, label="PERSONA")
+
+    def retrieve_chat_memory(self, query: str, user_hash: str, top_k: int = 3) -> str:
+        return self._retrieve(
+            query,
+            top_k=top_k,
+            where={"$and": [{"scope": "chat_memory"}, {"user_hash": user_hash}]},
+            label="CHAT_MEMORY",
+        )
+
     def retrieve(self, query: str, top_k: int = 3) -> str:
+        return self.retrieve_persona(query, top_k=top_k)
+
+    def _retrieve(self, query: str, top_k: int, where: dict[str, Any], label: str) -> str:
         if self.count() == 0:
             return ""
 
@@ -148,6 +173,7 @@ class ChromaMemory:
         result = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
+            where=where,
             include=["documents", "distances", "metadatas"],
         )
 
@@ -162,8 +188,8 @@ class ChromaMemory:
             if score < self.min_score:
                 continue
 
-            title = metadata.get("title", "Bağlam") if isinstance(metadata, dict) else "Bağlam"
-            entry = f"[{title} | skor={score:.2f}]\n{document.strip()}"
+            title = metadata.get("title", "Baglam") if isinstance(metadata, dict) else "Baglam"
+            entry = f"[{label}: {title} | skor={score:.2f}]\n{document.strip()}"
             if total_chars + len(entry) > self.max_context_chars:
                 break
             selected.append(entry)
@@ -180,3 +206,11 @@ class ChromaMemory:
     def _memory_id(text: str, timestamp: str) -> str:
         digest = hashlib.sha256(f"whatsapp_chat:{timestamp}:{text}".encode("utf-8")).hexdigest()
         return f"mem_{digest[:28]}"
+
+    @staticmethod
+    def _is_persona_metadata(metadata: Any, source_name: str) -> bool:
+        if not isinstance(metadata, dict):
+            return False
+        if metadata.get("scope") == "persona":
+            return True
+        return metadata.get("source") == source_name and metadata.get("source") != "whatsapp_chat"

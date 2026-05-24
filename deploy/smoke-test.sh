@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source ./deploy/env-utils.sh
+
+THREADS="${OLLAMA_NUM_THREAD:-$(physical_core_count)}"
+
 echo "Checking Ollama service..."
 curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
 
@@ -20,7 +24,12 @@ curl --max-time 180 -fsS http://127.0.0.1:11434/api/chat \
     "stream": false,
     "think": false,
     "options": {
-      "num_ctx": 1024
+      "num_ctx": 1024,
+      "temperature": 0.35,
+      "top_p": 0.85,
+      "repeat_penalty": 1.03,
+      "num_predict": 32,
+      "num_thread": '"$THREADS"'
     },
     "messages": [
       {

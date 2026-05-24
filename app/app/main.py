@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 import unicodedata
@@ -21,6 +22,11 @@ class Settings(BaseSettings):
     ollama_model: str = "mustafa-persona:0.6b"
     ollama_num_ctx: int = 1024
     ollama_think: bool = False
+    ollama_temperature: float = 0.35
+    ollama_top_p: float = 0.85
+    ollama_repeat_penalty: float = 1.03
+    ollama_num_predict: int = 180
+    ollama_num_thread: int = 0
     persona_knowledge_path: str = "/app/knowledge/mustafa_persona.md"
     chroma_path: str = "/app/data/chroma"
     chroma_collection: str = "mustafa_persona"
@@ -37,9 +43,10 @@ class Settings(BaseSettings):
     whatsapp_phone_number_id: str
     whatsapp_graph_api_version: str = "v25.0"
     bot_database_path: str = "/app/data/whoamai-bot.db"
-    activation_phrase: str = "hey mustafa, başlat"
+    activation_phrase: str = "hey mustafa, baslat"
     stop_phrases: str = "durdur,bitir,kapat"
-    max_history_messages: int = 4
+    max_history_messages: int = 6
+    processed_message_retention_days: int = 7
 
 
 settings = Settings()
@@ -93,8 +100,19 @@ MEMORY_SIGNAL_WORDS = {
 BANNED_REPLY_FRAGMENTS = (
     "ben bir yapay zeka",
     "bir yapay zeka",
+    "yapay zeka olarak",
     "asistanim",
     "persona asistani",
+    "gercek mustafa",
+    "bilincim var",
+    "duygularim var",
+    "ozledim",
+    "asigim",
+    "kiskandim",
+    "askim",
+    "canim",
+    "cicim",
+    "sevgilim",
 )
 
 
@@ -109,6 +127,10 @@ def fold_turkish(value: str) -> str:
     value = unicodedata.normalize("NFKD", value)
     value = "".join(character for character in value if not unicodedata.combining(character))
     return " ".join(value.lower().split())
+
+
+def user_hash(wa_id: str) -> str:
+    return hashlib.sha256(f"whatsapp:{wa_id}".encode("utf-8")).hexdigest()[:32]
 
 
 def fallback_memory_candidate(user_text: str) -> str | None:
@@ -126,8 +148,12 @@ def fallback_memory_candidate(user_text: str) -> str | None:
     return f"Kullanici sunu belirtti: {lowered}."
 
 
-def stop_phrases() -> set[str]:
-    return {normalize_text(item) for item in settings.stop_phrases.split(",") if item.strip()}
+def phrase_matches(value: str, phrase: str) -> bool:
+    return normalize_text(value) == normalize_text(phrase) or fold_turkish(value) == fold_turkish(phrase)
+
+
+def is_stop_phrase(value: str) -> bool:
+    return any(phrase_matches(value, item) for item in settings.stop_phrases.split(",") if item.strip())
 
 
 @contextmanager
@@ -180,6 +206,11 @@ def init_db() -> None:
             )
             """
         )
+        cutoff = f"-{settings.processed_message_retention_days} days"
+        connection.execute(
+            "DELETE FROM processed_messages WHERE created_at < datetime('now', ?)",
+            (cutoff,),
+        )
 
 
 @app.on_event("startup")
@@ -195,9 +226,9 @@ def startup() -> None:
         min_score=settings.rag_min_score,
     )
     try:
-        if memory.count() == 0:
+        if memory.count_by_scope("persona") == 0:
             count = memory.reset_from_markdown(settings.persona_knowledge_path)
-            print(json.dumps({"event": "rag_indexed", "chunks": count}))
+            print(json.dumps({"event": "rag_indexed", "chunks": count, "scope": "persona"}))
     except Exception as exc:
         print(json.dumps({"event": "rag_index_failed", "error": str(exc)}))
 
@@ -283,17 +314,17 @@ def load_history(wa_id: str, exclude_latest_user_text: str | None = None) -> lis
                 break
 
     for row in ordered_rows:
-        if row["role"] == "assistant":
+        role = str(row["role"])
+        if role not in {"user", "assistant"}:
             continue
         content = " ".join(str(row["content"]).split())
         if not content:
             continue
         if latest_excluded_id is not None and row["id"] == latest_excluded_id:
             continue
-        folded = fold_turkish(content)
         if len(content) > 280:
             content = content[:280].rsplit(" ", 1)[0].strip()
-        history.append({"role": row["role"], "content": content})
+        history.append({"role": role, "content": content})
     return history
 
 
@@ -322,7 +353,7 @@ def clean_reply(reply: str, user_text: str, suheyla_mode: bool) -> str:
         kept.append(sentence)
 
     if not kept:
-        return "Tamam, bunu not aldım."
+        return "Tamam, bunu not aldim."
 
     result = ". ".join(kept[:3]).strip()
     if result and result[-1] not in ".!?":
@@ -330,15 +361,35 @@ def clean_reply(reply: str, user_text: str, suheyla_mode: bool) -> str:
     return result
 
 
+def ollama_options() -> dict[str, int | float]:
+    options: dict[str, int | float] = {
+        "num_ctx": settings.ollama_num_ctx,
+        "temperature": settings.ollama_temperature,
+        "top_p": settings.ollama_top_p,
+        "repeat_penalty": settings.ollama_repeat_penalty,
+        "num_predict": settings.ollama_num_predict,
+    }
+    if settings.ollama_num_thread > 0:
+        options["num_thread"] = settings.ollama_num_thread
+    return options
+
+
 async def ask_ollama(wa_id: str, user_text: str) -> str:
-    rag_context = ""
+    rag_sections: list[str] = []
     if memory is not None:
         try:
-            rag_context = memory.retrieve(user_text, top_k=settings.rag_top_k)
+            persona_context = memory.retrieve_persona(user_text, top_k=settings.rag_top_k)
+            chat_context = memory.retrieve_chat_memory(
+                user_text,
+                user_hash=user_hash(wa_id),
+                top_k=settings.rag_top_k,
+            )
+            rag_sections = [section for section in (persona_context, chat_context) if section.strip()]
         except Exception as exc:
             print(json.dumps({"event": "rag_retrieve_failed", "error": str(exc)}))
 
     suheyla_mode = is_suheyla_mode(wa_id)
+    rag_context = "\n\n".join(rag_sections)
     messages = [{"role": "system", "content": build_system_prompt(rag_context, suheyla_mode=suheyla_mode)}]
     messages.extend(load_history(wa_id, exclude_latest_user_text=user_text))
     messages.append({"role": "user", "content": user_text})
@@ -348,11 +399,7 @@ async def ask_ollama(wa_id: str, user_text: str) -> str:
         "stream": False,
         "think": settings.ollama_think,
         "messages": messages,
-        "options": {
-            "num_ctx": settings.ollama_num_ctx,
-            "temperature": 0.55,
-            "top_p": 0.9,
-        },
+        "options": ollama_options(),
     }
 
     async with httpx.AsyncClient(timeout=180) as client:
@@ -363,7 +410,7 @@ async def ask_ollama(wa_id: str, user_text: str) -> str:
         return clean_reply(raw_reply, user_text, suheyla_mode)
 
 
-async def extract_and_store_memory(user_text: str, assistant_text: str) -> None:
+async def extract_and_store_memory(wa_id: str, user_text: str, assistant_text: str) -> None:
     print(json.dumps({"event": "memory_task_started"}))
     if not settings.memory_extraction_enabled or memory is None:
         print(
@@ -391,6 +438,7 @@ async def extract_and_store_memory(user_text: str, assistant_text: str) -> None:
             "num_ctx": settings.memory_extraction_num_ctx,
             "temperature": 0,
             "top_p": 0.7,
+            "repeat_penalty": settings.ollama_repeat_penalty,
         },
     }
 
@@ -405,7 +453,7 @@ async def extract_and_store_memory(user_text: str, assistant_text: str) -> None:
 
     extracted = data.get("message", {}).get("content", "").strip()
     extracted = extracted.strip("\"'` \n\t")
-    none_candidate = extracted.upper().strip(".。! ")
+    none_candidate = extracted.upper().strip(".! ")
     if not extracted or none_candidate == "NONE":
         fallback = fallback_memory_candidate(user_text)
         if fallback is None:
@@ -419,7 +467,7 @@ async def extract_and_store_memory(user_text: str, assistant_text: str) -> None:
 
     timestamp = datetime.now(ZoneInfo("Europe/Istanbul")).isoformat()
     try:
-        memory_id = memory.add_chat_memory(extracted, timestamp)
+        memory_id = memory.add_chat_memory(extracted, timestamp, user_hash=user_hash(wa_id))
     except Exception as exc:
         print(json.dumps({"event": "memory_store_failed", "error": str(exc), "memory": extracted}, ensure_ascii=False))
         return
@@ -512,7 +560,6 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
 
         wa_id = message["from"]
         text = message["text"]
-        normalized = normalize_text(text)
 
         if message["type"] != "text":
             try:
@@ -521,12 +568,12 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
                 pass
             continue
 
-        if normalized == normalize_text(settings.activation_phrase):
+        if phrase_matches(text, settings.activation_phrase):
             set_active(wa_id, True)
             set_suheyla_mode(wa_id, False)
             clear_history(wa_id)
             remember(wa_id, "user", text)
-            reply = "Başlattım. Artık Mustafa persona ile konuşabilirsin."
+            reply = "Baslattim. Artik Mustafa persona ile konusabilirsin."
             remember(wa_id, "assistant", reply)
             try:
                 await send_whatsapp_text(wa_id, reply)
@@ -534,11 +581,11 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
                 pass
             continue
 
-        if normalized in stop_phrases():
+        if is_stop_phrase(text):
             set_active(wa_id, False)
             set_suheyla_mode(wa_id, False)
             clear_history(wa_id)
-            reply = "Tamam, bu sohbeti durdurdum. Tekrar başlatmak için 'hey mustafa, başlat' yaz."
+            reply = "Tamam, bu sohbeti durdurdum. Tekrar baslatmak icin 'hey mustafa, baslat' yaz."
             try:
                 await send_whatsapp_text(wa_id, reply)
             except httpx.HTTPError:
@@ -547,7 +594,7 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
 
         if not is_active(wa_id):
             try:
-                await send_whatsapp_text(wa_id, "Başlamak için 'hey mustafa, başlat' yaz.")
+                await send_whatsapp_text(wa_id, "Baslamak icin 'hey mustafa, baslat' yaz.")
             except httpx.HTTPError:
                 pass
             continue
@@ -562,11 +609,11 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
         try:
             reply = await ask_ollama(wa_id, text)
         except httpx.HTTPError as exc:
-            reply = "Şu an local modelden cevap alamıyorum. Birazdan tekrar dener misin?"
+            reply = "Su an local modelden cevap alamiyorum. Birazdan tekrar dener misin?"
             print(json.dumps({"error": str(exc), "wa_id": wa_id}))
         remember(wa_id, "assistant", reply)
-        background_tasks.add_task(extract_and_store_memory, text, reply)
-        print(json.dumps({"event": "memory_task_scheduled", "wa_id": wa_id}))
+        background_tasks.add_task(extract_and_store_memory, wa_id, text, reply)
+        print(json.dumps({"event": "memory_task_scheduled", "user_hash": user_hash(wa_id)}))
         try:
             await send_whatsapp_text(wa_id, reply)
         except httpx.HTTPError:
