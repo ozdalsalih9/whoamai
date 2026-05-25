@@ -183,6 +183,26 @@ SELF_INTRO_WORDS = {
     "mustafa kim",
     "sen kimsin",
 }
+QUERY_STOPWORDS = {
+    "ben",
+    "sen",
+    "ne",
+    "nasil",
+    "nasil",
+    "yapacaksin",
+    "yapcan",
+    "napacaksin",
+    "gunu",
+    "sonra",
+    "var",
+    "mi",
+    "bir",
+    "sey",
+    "bisi",
+    "plan",
+    "planin",
+    "saat",
+}
 BANNED_REPLY_FRAGMENTS = (
     "ben bir yapay zeka",
     "bir yapay zeka",
@@ -208,6 +228,8 @@ BANNED_REPLY_FRAGMENTS = (
 ISTANBUL_TZ = ZoneInfo("Europe/Istanbul")
 GLOBAL_MEMORY_REPLY = "Tamam, bunu not aldim."
 MEMORY_STORE_FAILED_REPLY = "Su an not alamadim."
+OWNER_NOT_CONFIGURED_REPLY = "Global hafiza icin OWNER_WA_IDS ayarli degil."
+NOT_OWNER_MEMORY_REPLY = "Bunu global hafizaya kaydedemem."
 STATUS_REPLY = "iyi kanka yuvarlan\u0131p gidioz"
 NO_PLAN_REPLY = "\u015fu anl\u0131k bi plan yok haberle\u015firiz yine"
 SELF_INTRO_REPLY = (
@@ -238,6 +260,13 @@ class MemoryTiming:
     expires_at: datetime | None
 
 
+@dataclass(frozen=True)
+class ResponseRule:
+    question_text: str
+    question_key: str
+    answer_text: str
+
+
 def normalize_text(value: str) -> str:
     value = value.strip().lower()
     value = unicodedata.normalize("NFKC", value)
@@ -263,9 +292,12 @@ def owner_wa_ids() -> set[str]:
     return {item.strip() for item in settings.owner_wa_ids.split(",") if item.strip()}
 
 
+def owner_configured() -> bool:
+    return bool(owner_wa_ids())
+
+
 def is_owner_wa_id(wa_id: str) -> bool:
-    owners = owner_wa_ids()
-    return not owners or wa_id in owners
+    return wa_id in owner_wa_ids()
 
 
 def has_remember_signal(user_text: str) -> bool:
@@ -294,7 +326,9 @@ def is_plan_query(user_text: str) -> bool:
         return False
     if any(word in folded for word in PLAN_QUERY_WORDS):
         return True
-    return bool(re.search(r"\b(\d+\s*(dakika|dk|saat)|yarim\s+saat)\s+sonra\b", folded))
+    if mentioned_weekday(user_text) is not None:
+        return True
+    return bool(re.search(r"\b(\d+\s*(dakika|dk|saat|gun|gün|hafta)|yarim\s+saat)\s+sonra\b", folded))
 
 
 def is_self_intro_query(user_text: str) -> bool:
@@ -311,8 +345,48 @@ def strip_memory_directives(user_text: str) -> str:
     return cleaned.strip(" .,!?\t\n")
 
 
+def normalize_rule_text(value: str) -> str:
+    stripped = value.strip(" \"'`“”‘’.,:;!?")
+    return " ".join(stripped.split())
+
+
+def response_rule_key(value: str) -> str:
+    return fold_turkish(normalize_rule_text(value)).strip(" ?!.")
+
+
+def parse_response_rule(user_text: str) -> ResponseRule | None:
+    cleaned = strip_memory_directives(user_text)
+    patterns = (
+        r"^ben\s+(.+?)\s+sorusuna\s+(.+?)\s+(?:diye|seklinde|şeklinde)\s+cevap\s+veririm\b",
+        r"^(.+?)\s+sorusuna\s+(.+?)\s+(?:diye|seklinde|şeklinde)\s+cevap\s+veririm\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+        if not match:
+            continue
+        question_text = normalize_rule_text(match.group(1))
+        answer_text = normalize_rule_text(match.group(2))
+        question_key = response_rule_key(question_text)
+        if question_key and answer_text:
+            return ResponseRule(question_text=question_text, question_key=question_key, answer_text=answer_text)
+    return None
+
+
 def end_of_day(value: datetime) -> datetime:
     return value.replace(hour=23, minute=59, second=59, microsecond=0)
+
+
+def end_of_week(value: datetime) -> datetime:
+    days_until_sunday = 6 - value.weekday()
+    return end_of_day(value + timedelta(days=days_until_sunday))
+
+
+def end_of_month(value: datetime) -> datetime:
+    if value.month == 12:
+        next_month = value.replace(year=value.year + 1, month=1, day=1)
+    else:
+        next_month = value.replace(month=value.month + 1, day=1)
+    return next_month - timedelta(seconds=1)
 
 
 def mentioned_weekday(value: str) -> str | None:
@@ -329,6 +403,55 @@ def next_weekday_datetime(current: datetime, weekday: str) -> datetime:
     return target.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def mentioned_clock_time(value: str) -> tuple[int, int] | None:
+    folded = fold_turkish(value)
+    match = re.search(r"\b(?:saat\s*)?([01]?\d|2[0-3])(?::|\.)([0-5]\d)\b", folded)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+
+    match = re.search(r"\bsaat\s+([01]?\d|2[0-3])\b", folded)
+    if not match:
+        return None
+
+    hour = int(match.group(1))
+    if hour <= 7 and any(word in folded for word in ("aksam", "akşam", "gece")):
+        hour += 12
+    return hour, 0
+
+
+def apply_clock_time(base: datetime, value: str) -> datetime:
+    clock = mentioned_clock_time(value)
+    if clock is None:
+        return base
+    hour, minute = clock
+    return base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def period_expiry(current: datetime, value: str) -> tuple[datetime, datetime] | None:
+    folded = fold_turkish(value)
+    periods = {
+        "sabah": (8, 12),
+        "ogle": (12, 15),
+        "oglen": (12, 15),
+        "aksam": (18, 23),
+        "gece": (21, 23),
+    }
+    for word, (start_hour, end_hour) in periods.items():
+        if word in folded:
+            start = current.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+            if start < current:
+                start += timedelta(days=1)
+            end = start.replace(hour=end_hour, minute=59, second=59)
+            return start, end
+    return None
+
+
+def content_tokens(value: str) -> set[str]:
+    folded = fold_turkish(value)
+    tokens = set(re.findall(r"[a-z0-9']{3,}", folded))
+    return {token for token in tokens if token not in QUERY_STOPWORDS}
+
+
 def parse_memory_timing(user_text: str, now: datetime | None = None) -> MemoryTiming:
     current = now or now_istanbul()
     folded = fold_turkish(user_text)
@@ -338,6 +461,9 @@ def parse_memory_timing(user_text: str, now: datetime | None = None) -> MemoryTi
 
     minute_match = re.search(r"\b(\d+)\s*(dakika|dk)\s+sonra\b", folded)
     hour_match = re.search(r"\b(\d+)\s*saat\s+sonra\b", folded)
+    day_match = re.search(r"\b(\d+)\s*(gun|gün)\s+sonra\b", folded)
+    week_match = re.search(r"\b(\d+)\s*hafta\s+sonra\b", folded)
+    period = period_expiry(current, user_text)
     if "yarim saat sonra" in folded:
         event_at = current + timedelta(minutes=30)
         expires_at = event_at
@@ -347,6 +473,15 @@ def parse_memory_timing(user_text: str, now: datetime | None = None) -> MemoryTi
     elif hour_match:
         event_at = current + timedelta(hours=int(hour_match.group(1)))
         expires_at = event_at
+    elif day_match:
+        event_at = current + timedelta(days=int(day_match.group(1)))
+        expires_at = end_of_day(event_at)
+    elif week_match:
+        event_at = current + timedelta(weeks=int(week_match.group(1)))
+        expires_at = end_of_day(event_at)
+    elif "haftaya" in folded:
+        event_at = current + timedelta(days=7)
+        expires_at = end_of_day(event_at)
     elif "bugun" in folded:
         event_at = current
         expires_at = end_of_day(current)
@@ -357,9 +492,28 @@ def parse_memory_timing(user_text: str, now: datetime | None = None) -> MemoryTi
     elif weekday is not None:
         event_at = next_weekday_datetime(current, weekday)
         expires_at = end_of_day(event_at)
+    elif "bu hafta" in folded:
+        event_at = current
+        expires_at = end_of_week(current)
+    elif "ay sonu" in folded or "ayin sonu" in folded:
+        event_at = current
+        expires_at = end_of_month(current)
+    elif period is not None:
+        event_at, expires_at = period
+
+    if event_at is not None:
+        event_at = apply_clock_time(event_at, user_text)
+        if expires_at is not None and event_at > expires_at:
+            expires_at = end_of_day(event_at)
 
     if expires_at is not None:
         return MemoryTiming(memory_kind="plan", event_at=event_at, expires_at=expires_at)
+
+    if has_remember_signal(user_text) and (
+        any(char.isdigit() for char in folded)
+        or any(word in folded for word in ("sabah", "ogle", "oglen", "aksam", "gece", "haftaya", "ay sonu"))
+    ):
+        return MemoryTiming(memory_kind="plan", event_at=None, expires_at=None)
 
     if any(word in folded for word in PLAN_ACTION_WORDS):
         return MemoryTiming(memory_kind="plan", event_at=None, expires_at=None)
@@ -368,6 +522,10 @@ def parse_memory_timing(user_text: str, now: datetime | None = None) -> MemoryTi
 
 
 def build_memory_text(user_text: str) -> str:
+    rule = parse_response_rule(user_text)
+    if rule is not None:
+        return f"Mustafa bu soru geldiginde soyle cevap verir: Soru: {rule.question_text}. Cevap: {rule.answer_text}."
+
     cleaned = strip_memory_directives(user_text)
     if not cleaned:
         cleaned = "kisa bir not"
@@ -406,10 +564,17 @@ def select_plan_context_for_query(context: str, query: str) -> str:
                 return block
 
     folded_query = fold_turkish(query)
+    query_tokens = content_tokens(query)
+    best_block = ""
+    best_score = 0
     for block in blocks:
-        folded_block = fold_turkish(block)
-        if any(word in folded_query and word in folded_block for word in ("avm", "suheyla", "kavus", "bulus")):
-            return block
+        block_tokens = content_tokens(block)
+        score = len(query_tokens & block_tokens)
+        if score > best_score:
+            best_block = block
+            best_score = score
+    if best_block:
+        return best_block
 
     return blocks[0]
 
@@ -440,9 +605,41 @@ def active_global_plan_reply(query: str = "", now: datetime | None = None) -> st
     return memory_document_to_reply(document)
 
 
+def learned_response_reply(user_text: str, now: datetime | None = None) -> str | None:
+    if memory is None:
+        return None
+
+    query_key = response_rule_key(user_text)
+    if not query_key:
+        return None
+
+    current = now or now_istanbul()
+    try:
+        rules = memory.get_global_response_rules(now_ts=current.timestamp())
+    except Exception as exc:
+        print(json.dumps({"event": "response_rule_retrieve_failed", "error": str(exc)}))
+        return None
+
+    for rule in rules:
+        question_key = response_rule_key(rule.get("question_key", ""))
+        if query_key == question_key:
+            return rule.get("answer_text", "").strip() or None
+
+    for rule in rules:
+        question_key = response_rule_key(rule.get("question_key", ""))
+        if question_key and (question_key in query_key or query_key in question_key):
+            return rule.get("answer_text", "").strip() or None
+
+    return None
+
+
 def deterministic_reply(user_text: str) -> str | None:
     if has_remember_signal(user_text):
         return None
+
+    learned = learned_response_reply(user_text)
+    if learned is not None:
+        return learned
 
     if is_basic_status_message(user_text):
         return STATUS_REPLY
@@ -660,7 +857,12 @@ def store_explicit_owner_memory(wa_id: str, user_text: str, now: datetime | None
         return None
 
     current = now or now_istanbul()
-    timing = parse_memory_timing(user_text, now=current)
+    rule = parse_response_rule(user_text)
+    timing = (
+        MemoryTiming(memory_kind="response_rule", event_at=None, expires_at=None)
+        if rule is not None
+        else parse_memory_timing(user_text, now=current)
+    )
     timestamp = current.isoformat()
     memory_text = build_memory_text(user_text)
     try:
@@ -674,6 +876,9 @@ def store_explicit_owner_memory(wa_id: str, user_text: str, now: datetime | None
             event_at_ts=timing.event_at.timestamp() if timing.event_at is not None else None,
             expires_at_ts=timing.expires_at.timestamp() if timing.expires_at is not None else None,
             owner_hash=user_hash(wa_id),
+            question_key=rule.question_key if rule is not None else None,
+            question_text=rule.question_text if rule is not None else None,
+            answer_text=rule.answer_text if rule is not None else None,
         )
     except Exception as exc:
         print(json.dumps({"event": "owner_memory_store_failed", "error": str(exc)}, ensure_ascii=False))
@@ -1006,12 +1211,19 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
 
         remember(wa_id, "user", text)
         schedule_memory_extraction = True
-        owner_memory_attempted = is_owner_wa_id(wa_id) and has_remember_signal(text)
+        memory_write_attempted = has_remember_signal(text)
+        owner_memory_attempted = is_owner_wa_id(wa_id) and memory_write_attempted
         reply = store_explicit_owner_memory(wa_id, text)
         if reply is not None:
             schedule_memory_extraction = False
         elif owner_memory_attempted:
             reply = MEMORY_STORE_FAILED_REPLY
+            schedule_memory_extraction = False
+        elif memory_write_attempted and not owner_configured():
+            reply = OWNER_NOT_CONFIGURED_REPLY
+            schedule_memory_extraction = False
+        elif memory_write_attempted:
+            reply = NOT_OWNER_MEMORY_REPLY
             schedule_memory_extraction = False
         else:
             reply = deterministic_reply(text)

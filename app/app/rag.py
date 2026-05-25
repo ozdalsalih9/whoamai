@@ -151,6 +151,9 @@ class ChromaMemory:
         event_at_ts: float | None = None,
         expires_at_ts: float | None = None,
         owner_hash: str | None = None,
+        question_key: str | None = None,
+        question_text: str | None = None,
+        answer_text: str | None = None,
     ) -> str:
         metadata: dict[str, Any] = {
             "scope": "chat_memory",
@@ -169,6 +172,12 @@ class ChromaMemory:
             metadata["expires_at_ts"] = expires_at_ts
         if owner_hash is not None:
             metadata["owner_hash"] = owner_hash
+        if question_key is not None:
+            metadata["question_key"] = question_key
+        if question_text is not None:
+            metadata["question_text"] = question_text
+        if answer_text is not None:
+            metadata["answer_text"] = answer_text
 
         return self.add_memory(text, metadata)
 
@@ -233,6 +242,31 @@ class ChromaMemory:
             total_chars += len(entry)
 
         return "\n\n".join(selected)
+
+    def get_global_response_rules(self, now_ts: float | None = None) -> list[dict[str, str]]:
+        if self.count() == 0:
+            return []
+
+        result = self.collection.get(where={"scope": "chat_memory"}, include=["metadatas"])
+        rules: list[dict[str, str]] = []
+        for metadata in result.get("metadatas", []):
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("visibility") != "global" or metadata.get("memory_kind") != "response_rule":
+                continue
+            if self._is_expired(metadata, now_ts):
+                continue
+            question_key = metadata.get("question_key")
+            answer_text = metadata.get("answer_text")
+            if isinstance(question_key, str) and isinstance(answer_text, str):
+                rules.append(
+                    {
+                        "question_key": question_key,
+                        "answer_text": answer_text,
+                        "question_text": str(metadata.get("question_text", "")),
+                    }
+                )
+        return rules
 
     def delete_expired_memories(self, now_ts: float) -> int:
         if self.count() == 0:
