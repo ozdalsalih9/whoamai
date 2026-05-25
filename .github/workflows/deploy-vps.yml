@@ -18,19 +18,19 @@ jobs:
     steps:
       - name: Configure SSH
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_HOST: ${{ secrets.VPS_HOST || vars.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT || vars.VPS_PORT }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
         run: |
           set -euo pipefail
           VPS_PORT="${VPS_PORT:-22}"
 
           if [ -z "${VPS_HOST:-}" ]; then
-            echo "::error::Missing GitHub secret VPS_HOST"
+            echo "::error::Missing VPS_HOST. Add it as a Repository secret or Repository variable named VPS_HOST."
             exit 1
           fi
           if [ -z "${VPS_SSH_KEY:-}" ]; then
-            echo "::error::Missing GitHub secret VPS_SSH_KEY"
+            echo "::error::Missing GitHub secret VPS_SSH_KEY. This must be a Repository secret."
             exit 1
           fi
 
@@ -50,20 +50,20 @@ jobs:
 
       - name: Deploy over SSH
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_PORT: ${{ secrets.VPS_PORT }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+          VPS_HOST: ${{ secrets.VPS_HOST || vars.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT || vars.VPS_PORT }}
+          VPS_USER: ${{ secrets.VPS_USER || vars.VPS_USER }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR || vars.VPS_APP_DIR }}
         run: |
           set -euo pipefail
           VPS_PORT="${VPS_PORT:-22}"
 
           if [ -z "${VPS_HOST:-}" ]; then
-            echo "::error::Missing GitHub secret VPS_HOST"
+            echo "::error::Missing VPS_HOST. Add it as a Repository secret or Repository variable named VPS_HOST."
             exit 1
           fi
           if [ -z "${VPS_USER:-}" ]; then
-            echo "::error::Missing GitHub secret VPS_USER"
+            echo "::error::Missing VPS_USER. Add it as a Repository secret or Repository variable named VPS_USER."
             exit 1
           fi
 
