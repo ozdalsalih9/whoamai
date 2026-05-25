@@ -48,8 +48,17 @@ def test_deterministic_short_replies(monkeypatch) -> None:
     assert main.deterministic_reply("Naber React tarafinda durum ne?") is None
     assert main.deterministic_reply("30dk sonra AVM ye gidecegim, unutma") is None
     assert main.deterministic_reply("Planin var mi bir seyler yapalim mi?") == main.NO_PLAN_REPLY
-    assert main.deterministic_reply("Bana biraz kendinden bahset") == main.SELF_INTRO_REPLY
     assert main.deterministic_reply("Cok iyi olmus.") in {"sa\u011fol", "eyw"}
+
+
+def test_self_intro_uses_known_persona_facts() -> None:
+    reply = main.deterministic_reply("Bana biraz kendinden bahset")
+
+    assert "Mustafa Salih" in reply
+    assert "22 yasindayim" in reply
+    assert "Istanbul" in reply
+    assert "D\u00fczce" in reply
+    assert "AI" in reply
 
 
 def test_learned_response_rule_overrides_default(monkeypatch) -> None:

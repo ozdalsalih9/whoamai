@@ -182,6 +182,9 @@ SELF_INTRO_WORDS = {
     "biraz kendinden bahset",
     "mustafa kim",
     "sen kimsin",
+    "seni tanimak",
+    "seni taniyalim",
+    "tanit kendini",
 }
 PROFILE_FACT_QUERIES = (
     (("kac yas", "yas kac", "yasindasin", "yasiniz kac"), "Yas", "{} yasindayim."),
@@ -244,7 +247,7 @@ OWNER_NOT_CONFIGURED_REPLY = "Global hafiza icin OWNER_WA_IDS ayarli degil."
 NOT_OWNER_MEMORY_REPLY = "Bunu global hafizaya kaydedemem."
 STATUS_REPLY = "iyi kanka yuvarlan\u0131p gidioz"
 NO_PLAN_REPLY = "\u015fu anl\u0131k bi plan yok haberle\u015firiz yine"
-SELF_INTRO_REPLY = (
+SELF_INTRO_FALLBACK_REPLY = (
     "Mustafa; teknik konularda direkt, sosyal konularda k\u0131sa ve samimi cevap veren, "
     "proje ve AI taraf\u0131na odakl\u0131 biri."
 )
@@ -435,6 +438,48 @@ def profile_fact_reply(user_text: str) -> str | None:
             return None
         return template.format(value)
     return None
+
+
+def self_intro_reply() -> str:
+    name = extract_profile_fact("Tam ad") or "Mustafa Salih Ozdal"
+    age = extract_profile_fact("Yas")
+    city = extract_profile_fact("Sehir")
+    university = extract_profile_fact("Universite")
+    language = extract_profile_fact("Diller")
+    team = extract_profile_fact("Tuttugu futbol takimi")
+
+    profile_bits: list[str] = []
+    if age:
+        profile_bits.append(f"{age} yasindayim")
+    if city:
+        profile_bits.append(f"{city}'da yasiyorum")
+    if university:
+        profile_bits.append(f"{university} baglantim var")
+
+    first_sentence = f"Ben {name}."
+    if profile_bits:
+        first_sentence = f"Ben {name}; " + ", ".join(profile_bits) + "."
+
+    interests = [
+        "Bilgisayar muhendisligi",
+        "ASP.NET Core",
+        "React",
+        "AI sistemleri",
+        "siber guvenlik",
+    ]
+    second_sentence = f"Ilgi alanlarim daha cok {', '.join(interests[:3])}, AI ve guvenlik tarafinda yogunlasiyor."
+
+    extra_bits: list[str] = []
+    if language:
+        extra_bits.append(f"Diller: {language}")
+    if team:
+        extra_bits.append(f"takim olarak {team}")
+
+    third_sentence = "Kisa, direkt ve arkadasca konusmayi severim."
+    if extra_bits:
+        third_sentence = f"{third_sentence} Ek olarak {', '.join(extra_bits)}."
+
+    return " ".join([first_sentence, second_sentence, third_sentence]).strip() or SELF_INTRO_FALLBACK_REPLY
 
 
 def end_of_day(value: datetime) -> datetime:
@@ -714,7 +759,7 @@ def deterministic_reply(user_text: str) -> str | None:
         return STATUS_REPLY
 
     if is_self_intro_query(user_text):
-        return SELF_INTRO_REPLY
+        return self_intro_reply()
 
     if is_short_praise(user_text):
         digest = hashlib.sha256(fold_turkish(user_text).encode("utf-8")).hexdigest()
