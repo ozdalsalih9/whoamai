@@ -19,27 +19,55 @@ jobs:
       - name: Configure SSH
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
         run: |
           set -euo pipefail
-          test -n "$VPS_HOST"
-          test -n "$VPS_SSH_KEY"
+          VPS_PORT="${VPS_PORT:-22}"
+
+          if [ -z "${VPS_HOST:-}" ]; then
+            echo "::error::Missing GitHub secret VPS_HOST"
+            exit 1
+          fi
+          if [ -z "${VPS_SSH_KEY:-}" ]; then
+            echo "::error::Missing GitHub secret VPS_SSH_KEY"
+            exit 1
+          fi
+
           mkdir -p ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/whoamai_vps_key
           chmod 600 ~/.ssh/whoamai_vps_key
-          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+          if ! ssh-keygen -y -f ~/.ssh/whoamai_vps_key > /dev/null; then
+            echo "::error::VPS_SSH_KEY is not a valid OpenSSH private key, or it has a passphrase"
+            exit 1
+          fi
+
+          if ! ssh-keyscan -T 10 -p "$VPS_PORT" -H "$VPS_HOST" >> ~/.ssh/known_hosts; then
+            echo "::error::Could not reach VPS_HOST on SSH port $VPS_PORT. Check VPS_HOST, VPS_PORT, firewall, and sshd."
+            exit 1
+          fi
 
       - name: Deploy over SSH
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
         run: |
           set -euo pipefail
-          test -n "$VPS_HOST"
-          test -n "$VPS_USER"
+          VPS_PORT="${VPS_PORT:-22}"
 
-          ssh -i ~/.ssh/whoamai_vps_key "$VPS_USER@$VPS_HOST" \
+          if [ -z "${VPS_HOST:-}" ]; then
+            echo "::error::Missing GitHub secret VPS_HOST"
+            exit 1
+          fi
+          if [ -z "${VPS_USER:-}" ]; then
+            echo "::error::Missing GitHub secret VPS_USER"
+            exit 1
+          fi
+
+          ssh -p "$VPS_PORT" -i ~/.ssh/whoamai_vps_key "$VPS_USER@$VPS_HOST" \
             'bash -s' -- "$VPS_APP_DIR" <<'REMOTE'
           set -euo pipefail
 
