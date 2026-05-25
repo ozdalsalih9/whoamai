@@ -41,13 +41,23 @@ chmod +x deploy/switch-to-light-model.sh
 ./deploy/switch-to-light-model.sh
 ```
 
+To try the higher-quality 4B model if the VPS has enough headroom:
+
+```bash
+chmod +x deploy/switch-to-4b-model.sh
+./deploy/switch-to-4b-model.sh
+```
+
 ## Memory Architecture
 
 - Core prompt is static and small: professional persona rules, anti-humanization constraints, Suheyla rules, and few-shot WhatsApp examples.
 - Dynamic state is injected on every message: current date/time, mood, and whether the current sender is treated as Suheyla.
 - Markdown knowledge is chunked into ChromaDB and retrieved only when semantically relevant.
 - New long-term facts from WhatsApp chats can be extracted in the background and inserted into the same Chroma collection with `scope=chat_memory`.
-- Persona Markdown chunks use `scope=persona`; chat memories are retrieved only for the hashed WhatsApp sender.
+- `OWNER_WA_IDS` can mark Mustafa's own WhatsApp IDs. Explicit owner messages like `unutma`, `aklinda tut`, `not al`, `hatirla`, or `kaydet` are stored as global Mustafa memory.
+- Persona Markdown chunks use `scope=persona`; private chat memories are retrieved only for the hashed WhatsApp sender.
+- Global owner memories use `visibility=global` and can be retrieved by other active chats when directly relevant.
+- Temporary plans keep `expires_at_ts`; examples like `30 dakika sonra` or `yarim saat sonra` expire at the stated time.
 - Recent user and assistant messages are kept in SQLite and sent as short conversation history.
 - WhatsApp stays as the only user interface.
 
@@ -75,8 +85,9 @@ chmod +x deploy/switch-to-light-model.sh
 4. The bot builds a system prompt with current Istanbul time, mood, Suheyla mode, and relevant ChromaDB snippets.
 5. The bot sends only the recent user history plus the current message to Ollama, then cleans unsafe or repetitive reply fragments.
 6. The reply is sent back through Meta WhatsApp Cloud API.
-7. A background task tries to extract new durable memories from the user message and stores useful ones in ChromaDB.
-8. The user can stop with `durdur`, `bitir`, or `kapat`.
+7. If the sender is in `OWNER_WA_IDS` and explicitly says to remember something, the bot stores it immediately as global Mustafa memory and replies with a short acknowledgement.
+8. Otherwise, a background task tries to extract new durable private memories from the user message and stores useful ones in ChromaDB.
+9. The user can stop with `durdur`, `bitir`, or `kapat`.
 
 Notes:
 
@@ -136,9 +147,12 @@ MEMORY_MAX_CHARS=240
 BOT_DATABASE_PATH=/app/data/whoamai-bot.db
 ACTIVATION_PHRASE=hey mustafa, baslat
 STOP_PHRASES=durdur,bitir,kapat
+OWNER_WA_IDS=
 MAX_HISTORY_MESSAGES=6
 PROCESSED_MESSAGE_RETENTION_DAYS=7
 ```
+
+Set `OWNER_WA_IDS` to comma-separated WhatsApp numeric IDs, for example `905xxxxxxxxx,905yyyyyyyyy`. Do not commit real phone numbers.
 
 ## Local Docker Test
 

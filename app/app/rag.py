@@ -139,40 +139,131 @@ class ChromaMemory:
         )
         return memory_id
 
-    def add_chat_memory(self, text: str, timestamp: str, user_hash: str) -> str:
-        return self.add_memory(
-            text,
-            {
-                "scope": "chat_memory",
-                "source": "whatsapp_chat",
-                "timestamp": timestamp,
-                "title": "WhatsApp Memory",
-                "user_hash": user_hash,
-            },
-        )
+    def add_chat_memory(
+        self,
+        text: str,
+        timestamp: str,
+        user_hash: str,
+        *,
+        memory_kind: str = "fact",
+        visibility: str = "private",
+        created_at_ts: float | None = None,
+        event_at_ts: float | None = None,
+        expires_at_ts: float | None = None,
+        owner_hash: str | None = None,
+    ) -> str:
+        metadata: dict[str, Any] = {
+            "scope": "chat_memory",
+            "source": "whatsapp_chat",
+            "timestamp": timestamp,
+            "title": "WhatsApp Memory",
+            "user_hash": user_hash,
+            "memory_kind": memory_kind,
+            "visibility": visibility,
+        }
+        if created_at_ts is not None:
+            metadata["created_at_ts"] = created_at_ts
+        if event_at_ts is not None:
+            metadata["event_at_ts"] = event_at_ts
+        if expires_at_ts is not None:
+            metadata["expires_at_ts"] = expires_at_ts
+        if owner_hash is not None:
+            metadata["owner_hash"] = owner_hash
+
+        return self.add_memory(text, metadata)
 
     def retrieve_persona(self, query: str, top_k: int = 3) -> str:
         return self._retrieve(query, top_k=top_k, where={"scope": "persona"}, label="PERSONA")
 
-    def retrieve_chat_memory(self, query: str, user_hash: str, top_k: int = 3) -> str:
+    def retrieve_chat_memory(
+        self,
+        query: str,
+        user_hash: str,
+        top_k: int = 3,
+        now_ts: float | None = None,
+    ) -> str:
         return self._retrieve(
             query,
             top_k=top_k,
             where={"$and": [{"scope": "chat_memory"}, {"user_hash": user_hash}]},
             label="CHAT_MEMORY",
+            now_ts=now_ts,
+        )
+
+    def retrieve_global_memory(self, query: str, top_k: int = 3, now_ts: float | None = None) -> str:
+        return self._retrieve(
+            query,
+            top_k=top_k,
+            where={"$and": [{"scope": "chat_memory"}, {"visibility": "global"}]},
+            label="GLOBAL_MEMORY",
+            now_ts=now_ts,
         )
 
     def retrieve(self, query: str, top_k: int = 3) -> str:
         return self.retrieve_persona(query, top_k=top_k)
 
-    def _retrieve(self, query: str, top_k: int, where: dict[str, Any], label: str) -> str:
+    def retrieve_active_global_plans(self, top_k: int = 3, now_ts: float | None = None) -> str:
         if self.count() == 0:
+            return ""
+
+        result = self.collection.get(where={"scope": "chat_memory"}, include=["documents", "metadatas"])
+        rows: list[tuple[float, str, dict[str, Any]]] = []
+        for document, metadata in zip(result.get("documents", []), result.get("metadatas", [])):
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("visibility") != "global" or metadata.get("memory_kind") != "plan":
+                continue
+            if self._is_expired(metadata, now_ts):
+                continue
+            sort_ts = (
+                self._metadata_float(metadata, "event_at_ts")
+                or self._metadata_float(metadata, "created_at_ts")
+                or 0.0
+            )
+            rows.append((sort_ts, str(document).strip(), metadata))
+
+        selected: list[str] = []
+        total_chars = 0
+        for _, document, metadata in sorted(rows, key=lambda item: item[0])[:top_k]:
+            title = metadata.get("title", "Baglam")
+            entry = f"[GLOBAL_PLAN: {title}]\n{document}"
+            if total_chars + len(entry) > self.max_context_chars:
+                break
+            selected.append(entry)
+            total_chars += len(entry)
+
+        return "\n\n".join(selected)
+
+    def delete_expired_memories(self, now_ts: float) -> int:
+        if self.count() == 0:
+            return 0
+
+        result = self.collection.get(where={"scope": "chat_memory"}, include=["metadatas"])
+        expired_ids = [
+            item_id
+            for item_id, metadata in zip(result.get("ids", []), result.get("metadatas", []))
+            if isinstance(metadata, dict) and self._is_expired(metadata, now_ts)
+        ]
+        if expired_ids:
+            self.collection.delete(ids=expired_ids)
+        return len(expired_ids)
+
+    def _retrieve(
+        self,
+        query: str,
+        top_k: int,
+        where: dict[str, Any],
+        label: str,
+        now_ts: float | None = None,
+    ) -> str:
+        collection_count = self.count()
+        if collection_count == 0:
             return ""
 
         query_embedding = self.embedder.embed([query])[0]
         result = self.collection.query(
             query_embeddings=[query_embedding],
-            n_results=top_k,
+            n_results=min(max(top_k * 4, top_k), collection_count),
             where=where,
             include=["documents", "distances", "metadatas"],
         )
@@ -184,6 +275,8 @@ class ChromaMemory:
         selected: list[str] = []
         total_chars = 0
         for document, distance, metadata in zip(documents, distances, metadatas):
+            if self._is_expired(metadata, now_ts):
+                continue
             score = max(0.0, 1.0 - float(distance))
             if score < self.min_score:
                 continue
@@ -214,3 +307,22 @@ class ChromaMemory:
         if metadata.get("scope") == "persona":
             return True
         return metadata.get("source") == source_name and metadata.get("source") != "whatsapp_chat"
+
+    @classmethod
+    def _is_expired(cls, metadata: Any, now_ts: float | None) -> bool:
+        if now_ts is None or not isinstance(metadata, dict):
+            return False
+        expires_at_ts = cls._metadata_float(metadata, "expires_at_ts")
+        return expires_at_ts is not None and expires_at_ts <= now_ts
+
+    @staticmethod
+    def _metadata_float(metadata: dict[str, Any], key: str) -> float | None:
+        value = metadata.get(key)
+        if isinstance(value, int | float):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                return None
+        return None

@@ -18,6 +18,14 @@ def test_clean_reply_filters_identity_repetition_and_off_topic_suheyla() -> None
     assert cleaned == "Galatasaray buyuk mac refleksi guclu."
 
 
+def test_clean_reply_removes_classic_ai_help_closers() -> None:
+    reply = "Tamam, not aldim. Sana baska nasil yardimci olabilirim?"
+
+    cleaned = main.clean_reply(reply, "bunu unutma", suheyla_mode=False)
+
+    assert cleaned == "Tamam, not aldim."
+
+
 def test_load_history_keeps_last_six_messages_in_order_without_latest_user(monkeypatch) -> None:
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row

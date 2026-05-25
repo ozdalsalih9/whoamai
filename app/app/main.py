@@ -1,9 +1,11 @@
 import hashlib
 import json
+import re
 import sqlite3
 import unicodedata
 from contextlib import contextmanager
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -45,6 +47,7 @@ class Settings(BaseSettings):
     bot_database_path: str = "/app/data/whoamai-bot.db"
     activation_phrase: str = "hey mustafa, baslat"
     stop_phrases: str = "durdur,bitir,kapat"
+    owner_wa_ids: str = ""
     max_history_messages: int = 6
     processed_message_retention_days: int = 7
 
@@ -96,6 +99,63 @@ MEMORY_SIGNAL_WORDS = {
     "projem",
     "kiz arkadasim",
     "suheyla",
+    "aklinda tut",
+    "unutma",
+    "not al",
+    "hatirla",
+    "kaydet",
+}
+BASIC_STATUS_TRIGGERS = {
+    "naber",
+    "ne haber",
+    "nasilsin",
+    "napiyon",
+    "napion",
+    "ne yapiyorsun",
+}
+STATUS_ALLOWED_WORDS = {
+    "naber",
+    "ne",
+    "haber",
+    "nasilsin",
+    "napiyon",
+    "napion",
+    "yapiyorsun",
+    "kanka",
+    "knk",
+    "reis",
+}
+PRAISE_WORDS = {
+    "cok iyi",
+    "guzel olmus",
+    "harika",
+    "super",
+    "mukemmel",
+    "eline saglik",
+    "adamsin",
+    "kralsin",
+    "efsane",
+    "basarili",
+}
+REMEMBER_SIGNAL_WORDS = {
+    "aklinda tut",
+    "unutma",
+    "not al",
+    "hatirla",
+    "kaydet",
+}
+PLAN_QUERY_WORDS = {
+    "planin var mi",
+    "plan var mi",
+    "bir seyler yapalim",
+    "biseyler yapalim",
+    "bisi yapalim",
+    "bir sey yapalim",
+    "ne yapacaksin",
+    "napacaksin",
+    "n'apacaksin",
+    "ne yapcan",
+    "nereye gideceksin",
 }
 BANNED_REPLY_FRAGMENTS = (
     "ben bir yapay zeka",
@@ -113,7 +173,39 @@ BANNED_REPLY_FRAGMENTS = (
     "canim",
     "cicim",
     "sevgilim",
+    "sana baska nasil yardimci olabilirim",
+    "baska nasil yardimci olabilirim",
+    "yardimci olabilir miyim",
+    "how else can i help",
+    "anything else i can help",
 )
+ISTANBUL_TZ = ZoneInfo("Europe/Istanbul")
+GLOBAL_MEMORY_REPLY = "Tamam, bunu not aldim."
+MEMORY_STORE_FAILED_REPLY = "Su an not alamadim."
+STATUS_REPLY = "iyi kanka yuvarlan\u0131p gidioz"
+NO_PLAN_REPLY = "\u015fu anl\u0131k bi plan yok haberle\u015firiz yine"
+MEMORY_TEXT_PREFIX = "Mustafa sunu hatirlamami istedi:"
+DIRECTIVE_PATTERNS = (
+    r"\b(bunu\s+)?unutma\b",
+    r"\b(bunu\s+)?akl[\u0131i]nda tut\b",
+    r"\b(bunu\s+)?not al\b",
+    r"\b(bunu\s+)?hat[\u0131i]rla\b",
+    r"\b(bunu\s+)?kaydet\b",
+)
+TRAILING_AI_HELP_RE = re.compile(
+    r"(sana\s+)?baska\s+nasil\s+yardimci\s+olabilirim.*$|"
+    r"yardimci\s+olabilir\s+miyim.*$|"
+    r"how\s+else\s+can\s+i\s+help.*$|"
+    r"anything\s+else\s+i\s+can\s+help.*$",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class MemoryTiming:
+    memory_kind: str
+    event_at: datetime | None
+    expires_at: datetime | None
 
 
 def normalize_text(value: str) -> str:
@@ -131,6 +223,153 @@ def fold_turkish(value: str) -> str:
 
 def user_hash(wa_id: str) -> str:
     return hashlib.sha256(f"whatsapp:{wa_id}".encode("utf-8")).hexdigest()[:32]
+
+
+def now_istanbul() -> datetime:
+    return datetime.now(ISTANBUL_TZ)
+
+
+def owner_wa_ids() -> set[str]:
+    return {item.strip() for item in settings.owner_wa_ids.split(",") if item.strip()}
+
+
+def is_owner_wa_id(wa_id: str) -> bool:
+    return wa_id in owner_wa_ids()
+
+
+def has_remember_signal(user_text: str) -> bool:
+    folded = fold_turkish(user_text)
+    return any(signal in folded for signal in REMEMBER_SIGNAL_WORDS)
+
+
+def is_basic_status_message(user_text: str) -> bool:
+    folded = fold_turkish(user_text).strip(" ?!.")
+    words = re.findall(r"[a-z0-9']+", folded)
+    if not words or len(words) > 4 or any(word not in STATUS_ALLOWED_WORDS for word in words):
+        return False
+    return any(trigger == folded or trigger in folded for trigger in BASIC_STATUS_TRIGGERS)
+
+
+def is_short_praise(user_text: str) -> bool:
+    folded = fold_turkish(user_text)
+    if "?" in user_text or len(folded) > 90:
+        return False
+    return any(word in folded for word in PRAISE_WORDS)
+
+
+def is_plan_query(user_text: str) -> bool:
+    folded = fold_turkish(user_text)
+    if any(word in folded for word in PLAN_QUERY_WORDS):
+        return True
+    return bool(re.search(r"\b(\d+\s*(dakika|dk|saat)|yarim\s+saat)\s+sonra\b", folded))
+
+
+def strip_memory_directives(user_text: str) -> str:
+    cleaned = " ".join(user_text.strip().split())
+    for pattern in DIRECTIVE_PATTERNS:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+([,.!?])", r"\1", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip(" .,!?\t\n")
+
+
+def end_of_day(value: datetime) -> datetime:
+    return value.replace(hour=23, minute=59, second=59, microsecond=0)
+
+
+def parse_memory_timing(user_text: str, now: datetime | None = None) -> MemoryTiming:
+    current = now or now_istanbul()
+    folded = fold_turkish(user_text)
+    event_at: datetime | None = None
+    expires_at: datetime | None = None
+
+    minute_match = re.search(r"\b(\d+)\s*(dakika|dk)\s+sonra\b", folded)
+    hour_match = re.search(r"\b(\d+)\s*saat\s+sonra\b", folded)
+    if "yarim saat sonra" in folded:
+        event_at = current + timedelta(minutes=30)
+        expires_at = event_at
+    elif minute_match:
+        event_at = current + timedelta(minutes=int(minute_match.group(1)))
+        expires_at = event_at
+    elif hour_match:
+        event_at = current + timedelta(hours=int(hour_match.group(1)))
+        expires_at = event_at
+    elif "bugun" in folded:
+        event_at = current
+        expires_at = end_of_day(current)
+    elif "yarin" in folded:
+        tomorrow = current + timedelta(days=1)
+        event_at = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
+        expires_at = end_of_day(tomorrow)
+
+    if expires_at is not None:
+        return MemoryTiming(memory_kind="plan", event_at=event_at, expires_at=expires_at)
+
+    if any(word in folded for word in ("plan", "gidecegim", "gidiyorum", "gelecegim", "geliyorum")):
+        return MemoryTiming(memory_kind="plan", event_at=None, expires_at=None)
+
+    return MemoryTiming(memory_kind="fact", event_at=None, expires_at=None)
+
+
+def build_memory_text(user_text: str) -> str:
+    cleaned = strip_memory_directives(user_text)
+    if not cleaned:
+        cleaned = "kisa bir not"
+    if cleaned.endswith((".", "!", "?")):
+        cleaned = cleaned[:-1].strip()
+    return f"{MEMORY_TEXT_PREFIX} {cleaned}."
+
+
+def memory_document_to_reply(document: str) -> str:
+    text = " ".join(document.split())
+    if text.startswith(MEMORY_TEXT_PREFIX):
+        text = text[len(MEMORY_TEXT_PREFIX) :].strip()
+    text = strip_memory_directives(text)
+    text = re.sub(
+        r"^(normalde\s+)?(\d+\s*(dakika|dk|saat)\s+sonra|yar[\u0131i]m\s+saat\s+sonra)\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not text:
+        return NO_PLAN_REPLY
+    if text[-1] not in ".!?":
+        text += "."
+    return text
+
+
+def active_global_plan_reply(now: datetime | None = None) -> str | None:
+    if memory is None:
+        return None
+
+    current = now or now_istanbul()
+    now_ts = current.timestamp()
+    try:
+        memory.delete_expired_memories(now_ts)
+        context = memory.retrieve_active_global_plans(top_k=1, now_ts=now_ts)
+    except Exception as exc:
+        print(json.dumps({"event": "global_plan_retrieve_failed", "error": str(exc)}))
+        return None
+
+    if not context.strip():
+        return None
+
+    document = context.split("\n", 1)[1] if "\n" in context else context
+    return memory_document_to_reply(document)
+
+
+def deterministic_reply(user_text: str) -> str | None:
+    if is_basic_status_message(user_text):
+        return STATUS_REPLY
+
+    if is_short_praise(user_text):
+        digest = hashlib.sha256(fold_turkish(user_text).encode("utf-8")).hexdigest()
+        return "sa\u011fol" if int(digest[:2], 16) % 2 == 0 else "eyw"
+
+    if is_plan_query(user_text):
+        return active_global_plan_reply() or NO_PLAN_REPLY
+
+    return None
 
 
 def fallback_memory_candidate(user_text: str) -> str | None:
@@ -328,10 +567,52 @@ def load_history(wa_id: str, exclude_latest_user_text: str | None = None) -> lis
     return history
 
 
+def store_explicit_owner_memory(wa_id: str, user_text: str, now: datetime | None = None) -> str | None:
+    if memory is None or not is_owner_wa_id(wa_id) or not has_remember_signal(user_text):
+        return None
+
+    current = now or now_istanbul()
+    timing = parse_memory_timing(user_text, now=current)
+    timestamp = current.isoformat()
+    memory_text = build_memory_text(user_text)
+    try:
+        memory_id = memory.add_chat_memory(
+            memory_text,
+            timestamp,
+            user_hash=user_hash(wa_id),
+            memory_kind=timing.memory_kind,
+            visibility="global",
+            created_at_ts=current.timestamp(),
+            event_at_ts=timing.event_at.timestamp() if timing.event_at is not None else None,
+            expires_at_ts=timing.expires_at.timestamp() if timing.expires_at is not None else None,
+            owner_hash=user_hash(wa_id),
+        )
+    except Exception as exc:
+        print(json.dumps({"event": "owner_memory_store_failed", "error": str(exc)}, ensure_ascii=False))
+        return None
+
+    print(
+        json.dumps(
+            {
+                "event": "owner_memory_stored",
+                "id": memory_id,
+                "memory": memory_text,
+                "memory_kind": timing.memory_kind,
+                "expires_at": timing.expires_at.isoformat() if timing.expires_at is not None else None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return GLOBAL_MEMORY_REPLY
+
+
 def clean_reply(reply: str, user_text: str, suheyla_mode: bool) -> str:
     cleaned = " ".join(reply.split())
     if not cleaned:
         return "Su an cevap uretemedim."
+    cleaned = TRAILING_AI_HELP_RE.sub("", cleaned).strip(" .,!?\t\n")
+    if not cleaned:
+        return "Tamam, bunu not aldim."
 
     user_folded = fold_turkish(user_text)
     allow_suheyla = suheyla_mode or "suheyla" in user_folded
@@ -375,16 +656,35 @@ def ollama_options() -> dict[str, int | float]:
 
 
 async def ask_ollama(wa_id: str, user_text: str) -> str:
+    deterministic = deterministic_reply(user_text)
+    if deterministic is not None:
+        return deterministic
+
     rag_sections: list[str] = []
     if memory is not None:
         try:
+            now_ts = now_istanbul().timestamp()
+            memory.delete_expired_memories(now_ts)
             persona_context = memory.retrieve_persona(user_text, top_k=settings.rag_top_k)
+            global_plan_context = (
+                memory.retrieve_active_global_plans(top_k=1, now_ts=now_ts) if is_plan_query(user_text) else ""
+            )
+            global_context = memory.retrieve_global_memory(
+                user_text,
+                top_k=settings.rag_top_k,
+                now_ts=now_ts,
+            )
             chat_context = memory.retrieve_chat_memory(
                 user_text,
                 user_hash=user_hash(wa_id),
                 top_k=settings.rag_top_k,
+                now_ts=now_ts,
             )
-            rag_sections = [section for section in (persona_context, chat_context) if section.strip()]
+            rag_sections = [
+                section
+                for section in (persona_context, global_plan_context, global_context, chat_context)
+                if section.strip()
+            ]
         except Exception as exc:
             print(json.dumps({"event": "rag_retrieve_failed", "error": str(exc)}))
 
@@ -465,9 +765,20 @@ async def extract_and_store_memory(wa_id: str, user_text: str, assistant_text: s
     if len(extracted) > settings.memory_max_chars:
         extracted = extracted[: settings.memory_max_chars].rsplit(" ", 1)[0].strip()
 
-    timestamp = datetime.now(ZoneInfo("Europe/Istanbul")).isoformat()
+    current = now_istanbul()
+    timing = parse_memory_timing(user_text, now=current)
+    timestamp = current.isoformat()
     try:
-        memory_id = memory.add_chat_memory(extracted, timestamp, user_hash=user_hash(wa_id))
+        memory_id = memory.add_chat_memory(
+            extracted,
+            timestamp,
+            user_hash=user_hash(wa_id),
+            memory_kind=timing.memory_kind,
+            visibility="private",
+            created_at_ts=current.timestamp(),
+            event_at_ts=timing.event_at.timestamp() if timing.event_at is not None else None,
+            expires_at_ts=timing.expires_at.timestamp() if timing.expires_at is not None else None,
+        )
     except Exception as exc:
         print(json.dumps({"event": "memory_store_failed", "error": str(exc), "memory": extracted}, ensure_ascii=False))
         return
@@ -606,14 +917,28 @@ async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -
             set_suheyla_mode(wa_id, False)
 
         remember(wa_id, "user", text)
-        try:
-            reply = await ask_ollama(wa_id, text)
-        except httpx.HTTPError as exc:
-            reply = "Su an local modelden cevap alamiyorum. Birazdan tekrar dener misin?"
-            print(json.dumps({"error": str(exc), "wa_id": wa_id}))
+        schedule_memory_extraction = True
+        owner_memory_attempted = is_owner_wa_id(wa_id) and has_remember_signal(text)
+        reply = store_explicit_owner_memory(wa_id, text)
+        if reply is not None:
+            schedule_memory_extraction = False
+        elif owner_memory_attempted:
+            reply = MEMORY_STORE_FAILED_REPLY
+            schedule_memory_extraction = False
+        else:
+            reply = deterministic_reply(text)
+            if reply is not None:
+                schedule_memory_extraction = False
+            else:
+                try:
+                    reply = await ask_ollama(wa_id, text)
+                except httpx.HTTPError as exc:
+                    reply = "Su an local modelden cevap alamiyorum. Birazdan tekrar dener misin?"
+                    print(json.dumps({"error": str(exc), "wa_id": wa_id}))
         remember(wa_id, "assistant", reply)
-        background_tasks.add_task(extract_and_store_memory, wa_id, text, reply)
-        print(json.dumps({"event": "memory_task_scheduled", "user_hash": user_hash(wa_id)}))
+        if schedule_memory_extraction:
+            background_tasks.add_task(extract_and_store_memory, wa_id, text, reply)
+            print(json.dumps({"event": "memory_task_scheduled", "user_hash": user_hash(wa_id)}))
         try:
             await send_whatsapp_text(wa_id, reply)
         except httpx.HTTPError:
