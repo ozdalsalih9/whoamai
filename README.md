@@ -228,6 +228,31 @@ chmod +x deploy/reindex-knowledge.sh
 ./deploy/reindex-knowledge.sh
 ```
 
+## GitHub Actions VPS Deploy
+
+The repo includes `.github/workflows/deploy-vps.yml`. On every push to `main`, GitHub Actions can SSH into the VPS, pull the latest commit, rebuild the Docker bot, reindex Chroma knowledge, and run a health check.
+
+Required GitHub repository secrets:
+
+```text
+VPS_HOST=your-vps-ip-or-domain
+VPS_USER=root
+VPS_SSH_KEY=private SSH key with access to the VPS
+VPS_APP_DIR=/root/whoamai
+```
+
+Recommended setup:
+
+```bash
+ssh-keygen -t ed25519 -C "github-actions-whoamai" -f ~/.ssh/whoamai_github_actions
+cat ~/.ssh/whoamai_github_actions.pub >> ~/.ssh/authorized_keys
+cat ~/.ssh/whoamai_github_actions
+```
+
+Paste the private key output into `VPS_SSH_KEY`. Keep `.env` only on the VPS; do not commit real tokens or phone numbers.
+
+The deploy uses `git pull --ff-only`, so it will fail instead of overwriting tracked edits made directly on the VPS. If deploy fails because of local VPS edits, either commit/stash them on the VPS or reset intentionally after reviewing them.
+
 ## Optional GGUF Model Path
 
 The default deployment keeps the current Ollama/Qwen model path. If a GGUF file is later copied to the VPS, create a separate model without changing the default install:

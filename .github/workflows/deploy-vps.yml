@@ -1,0 +1,64 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Configure SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_SSH_KEY"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/whoamai_vps_key
+          chmod 600 ~/.ssh/whoamai_vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy over SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+
+          ssh -i ~/.ssh/whoamai_vps_key "$VPS_USER@$VPS_HOST" \
+            'bash -s' -- "$VPS_APP_DIR" <<'REMOTE'
+          set -euo pipefail
+
+          APP_DIR="${1:-$HOME/whoamai}"
+          cd "$APP_DIR"
+
+          git fetch origin main
+          git pull --ff-only origin main
+
+          docker compose -f deploy/docker-compose.yml up -d --build --remove-orphans
+
+          if [ -x deploy/reindex-knowledge.sh ]; then
+            ./deploy/reindex-knowledge.sh
+          else
+            chmod +x deploy/reindex-knowledge.sh
+            ./deploy/reindex-knowledge.sh
+          fi
+
+          curl -fsS http://127.0.0.1:8000/health
+          docker ps --filter "name=whoamai-whatsapp-bot" --filter "status=running" --format "{{.Names}}" | grep -q '^whoamai-whatsapp-bot$'
+          docker logs --tail=80 whoamai-whatsapp-bot
+REMOTE
