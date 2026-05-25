@@ -74,10 +74,30 @@ jobs:
           APP_DIR="${1:-$HOME/whoamai}"
           cd "$APP_DIR"
 
+          wait_for_health() {
+            local attempts="${1:-30}"
+            local delay_seconds="${2:-3}"
+
+            for attempt in $(seq 1 "$attempts"); do
+              if curl -fsS http://127.0.0.1:8000/health >/dev/null; then
+                echo "Health check passed on attempt $attempt."
+                return 0
+              fi
+              echo "Health check attempt $attempt/$attempts failed; waiting ${delay_seconds}s..."
+              sleep "$delay_seconds"
+            done
+
+            echo "::error::WhatsApp bot health check failed after ${attempts} attempts."
+            docker ps -a --filter "name=whoamai-whatsapp-bot"
+            docker logs --tail=160 whoamai-whatsapp-bot || true
+            return 1
+          }
+
           git fetch origin main
           git pull --ff-only origin main
 
           docker compose -f deploy/docker-compose.yml up -d --build --remove-orphans
+          wait_for_health 40 3
 
           if [ -x deploy/reindex-knowledge.sh ]; then
             ./deploy/reindex-knowledge.sh
@@ -86,7 +106,7 @@ jobs:
             ./deploy/reindex-knowledge.sh
           fi
 
-          curl -fsS http://127.0.0.1:8000/health
+          wait_for_health 20 3
           docker ps --filter "name=whoamai-whatsapp-bot" --filter "status=running" --format "{{.Names}}" | grep -q '^whoamai-whatsapp-bot$'
           docker logs --tail=80 whoamai-whatsapp-bot
           REMOTE
