@@ -4,8 +4,9 @@ import app.main as main
 
 
 class CapturingMemory:
-    def __init__(self, global_plan_context: str = "") -> None:
+    def __init__(self, global_plan_context: str = "", global_memory_context: str = "") -> None:
         self.global_plan_context = global_plan_context
+        self.global_memory_context = global_memory_context
         self.added: list[dict[str, object]] = []
         self.deleted_at: list[float] = []
 
@@ -26,6 +27,9 @@ class CapturingMemory:
 
     def retrieve_active_global_plans(self, top_k: int = 3, now_ts: float | None = None) -> str:
         return self.global_plan_context
+
+    def retrieve_global_memory(self, query: str, top_k: int = 3, now_ts: float | None = None) -> str:
+        return self.global_memory_context
 
 
 def test_deterministic_short_replies(monkeypatch) -> None:
@@ -48,6 +52,36 @@ def test_deterministic_plan_query_uses_active_global_plan(monkeypatch) -> None:
     assert reply == "AVM ye gidecegim."
 
 
+def test_deterministic_plan_query_prefers_matching_weekday(monkeypatch) -> None:
+    context = (
+        "[GLOBAL_PLAN: WhatsApp Memory]\n"
+        "Mustafa sunu hatirlamami istedi: 30 dakika sonra AVM ye gidecegim.\n\n"
+        "[GLOBAL_PLAN: WhatsApp Memory]\n"
+        "Mustafa sunu hatirlamami istedi: Cuma gunu Suheyla'ya kavusacagim."
+    )
+    monkeypatch.setattr(main, "memory", CapturingMemory(global_plan_context=context))
+
+    reply = main.deterministic_reply("Cuma gunu ne yapacaksin?")
+
+    assert "Suheyla'ya kavusacagim" in reply
+    assert "AVM" not in reply
+
+
+def test_weekday_query_can_use_older_global_fact_memory(monkeypatch) -> None:
+    plan_context = "[GLOBAL_PLAN: WhatsApp Memory]\nMustafa sunu hatirlamami istedi: 30 dakika sonra AVM ye gidecegim."
+    fact_context = "[GLOBAL_MEMORY: WhatsApp Memory]\nMustafa sunu hatirlamami istedi: Cuma gunu Suheyla'ya kavusacagim."
+    monkeypatch.setattr(
+        main,
+        "memory",
+        CapturingMemory(global_plan_context=plan_context, global_memory_context=fact_context),
+    )
+
+    reply = main.deterministic_reply("Cuma gunu ne yapacaksin?")
+
+    assert "Suheyla'ya kavusacagim" in reply
+    assert "AVM" not in reply
+
+
 def test_owner_explicit_memory_is_global_and_temporary(monkeypatch) -> None:
     fake_memory = CapturingMemory()
     now = datetime(2026, 1, 1, 12, 0, tzinfo=main.ISTANBUL_TZ)
@@ -64,6 +98,26 @@ def test_owner_explicit_memory_is_global_and_temporary(monkeypatch) -> None:
     assert stored["owner_hash"] == main.user_hash("owner-wa")
     assert stored["expires_at_ts"] == now.timestamp() + 30 * 60
     assert "AVM ye gidecegim" in str(stored["text"])
+
+
+def test_weekday_memory_is_stored_as_expiring_plan(monkeypatch) -> None:
+    fake_memory = CapturingMemory()
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=main.ISTANBUL_TZ)
+    friday_end = datetime(2026, 5, 29, 23, 59, 59, tzinfo=main.ISTANBUL_TZ)
+    monkeypatch.setattr(main, "memory", fake_memory)
+    monkeypatch.setattr(main.settings, "owner_wa_ids", "")
+
+    reply = main.store_explicit_owner_memory(
+        "owner-wa",
+        "Cuma gunu Suheyla'ya kavusacagim unutma",
+        now=now,
+    )
+
+    assert reply == main.GLOBAL_MEMORY_REPLY
+    stored = fake_memory.added[0]
+    assert stored["memory_kind"] == "plan"
+    assert stored["expires_at_ts"] == friday_end.timestamp()
+    assert "Suheyla'ya kavusacagim" in str(stored["text"])
 
 
 def test_non_owner_explicit_memory_is_not_global(monkeypatch) -> None:

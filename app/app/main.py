@@ -157,6 +157,25 @@ PLAN_QUERY_WORDS = {
     "ne yapcan",
     "nereye gideceksin",
 }
+WEEKDAY_INDEX = {
+    "pazartesi": 0,
+    "sali": 1,
+    "carsamba": 2,
+    "persembe": 3,
+    "cuma": 4,
+    "cumartesi": 5,
+    "pazar": 6,
+}
+PLAN_ACTION_WORDS = {
+    "plan",
+    "gidecegim",
+    "gidiyorum",
+    "gelecegim",
+    "geliyorum",
+    "kavusacagim",
+    "bulusacagim",
+    "yapacagim",
+}
 SELF_INTRO_WORDS = {
     "kendinden bahset",
     "kendini anlat",
@@ -296,11 +315,26 @@ def end_of_day(value: datetime) -> datetime:
     return value.replace(hour=23, minute=59, second=59, microsecond=0)
 
 
+def mentioned_weekday(value: str) -> str | None:
+    folded = fold_turkish(value)
+    for weekday in WEEKDAY_INDEX:
+        if re.search(rf"\b{weekday}\b", folded):
+            return weekday
+    return None
+
+
+def next_weekday_datetime(current: datetime, weekday: str) -> datetime:
+    days_ahead = (WEEKDAY_INDEX[weekday] - current.weekday()) % 7
+    target = current + timedelta(days=days_ahead)
+    return target.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
 def parse_memory_timing(user_text: str, now: datetime | None = None) -> MemoryTiming:
     current = now or now_istanbul()
     folded = fold_turkish(user_text)
     event_at: datetime | None = None
     expires_at: datetime | None = None
+    weekday = mentioned_weekday(user_text)
 
     minute_match = re.search(r"\b(\d+)\s*(dakika|dk)\s+sonra\b", folded)
     hour_match = re.search(r"\b(\d+)\s*saat\s+sonra\b", folded)
@@ -320,11 +354,14 @@ def parse_memory_timing(user_text: str, now: datetime | None = None) -> MemoryTi
         tomorrow = current + timedelta(days=1)
         event_at = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
         expires_at = end_of_day(tomorrow)
+    elif weekday is not None:
+        event_at = next_weekday_datetime(current, weekday)
+        expires_at = end_of_day(event_at)
 
     if expires_at is not None:
         return MemoryTiming(memory_kind="plan", event_at=event_at, expires_at=expires_at)
 
-    if any(word in folded for word in ("plan", "gidecegim", "gidiyorum", "gelecegim", "geliyorum")):
+    if any(word in folded for word in PLAN_ACTION_WORDS):
         return MemoryTiming(memory_kind="plan", event_at=None, expires_at=None)
 
     return MemoryTiming(memory_kind="fact", event_at=None, expires_at=None)
@@ -357,7 +394,27 @@ def memory_document_to_reply(document: str) -> str:
     return text
 
 
-def active_global_plan_reply(now: datetime | None = None) -> str | None:
+def select_plan_context_for_query(context: str, query: str) -> str:
+    blocks = [block.strip() for block in context.split("\n\n") if block.strip()]
+    if not blocks:
+        return ""
+
+    weekday = mentioned_weekday(query)
+    if weekday is not None:
+        for block in blocks:
+            if mentioned_weekday(block) == weekday:
+                return block
+
+    folded_query = fold_turkish(query)
+    for block in blocks:
+        folded_block = fold_turkish(block)
+        if any(word in folded_query and word in folded_block for word in ("avm", "suheyla", "kavus", "bulus")):
+            return block
+
+    return blocks[0]
+
+
+def active_global_plan_reply(query: str = "", now: datetime | None = None) -> str | None:
     if memory is None:
         return None
 
@@ -365,7 +422,12 @@ def active_global_plan_reply(now: datetime | None = None) -> str | None:
     now_ts = current.timestamp()
     try:
         memory.delete_expired_memories(now_ts)
-        context = memory.retrieve_active_global_plans(top_k=1, now_ts=now_ts)
+        context = memory.retrieve_active_global_plans(top_k=5, now_ts=now_ts)
+        if query and mentioned_weekday(query) is not None:
+            global_context = memory.retrieve_global_memory(query, top_k=5, now_ts=now_ts)
+            global_match = select_plan_context_for_query(global_context, query)
+            if global_match and mentioned_weekday(global_match) == mentioned_weekday(query):
+                context = f"{global_match}\n\n{context}".strip()
     except Exception as exc:
         print(json.dumps({"event": "global_plan_retrieve_failed", "error": str(exc)}))
         return None
@@ -373,6 +435,7 @@ def active_global_plan_reply(now: datetime | None = None) -> str | None:
     if not context.strip():
         return None
 
+    context = select_plan_context_for_query(context, query)
     document = context.split("\n", 1)[1] if "\n" in context else context
     return memory_document_to_reply(document)
 
@@ -392,7 +455,7 @@ def deterministic_reply(user_text: str) -> str | None:
         return "sa\u011fol" if int(digest[:2], 16) % 2 == 0 else "eyw"
 
     if is_plan_query(user_text):
-        return active_global_plan_reply() or NO_PLAN_REPLY
+        return active_global_plan_reply(user_text) or NO_PLAN_REPLY
 
     return None
 
