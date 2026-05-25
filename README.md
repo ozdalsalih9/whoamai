@@ -241,6 +241,14 @@ VPS_SSH_KEY=private SSH key with access to the VPS
 VPS_APP_DIR=/root/whoamai
 ```
 
+Optional GitHub repository variable:
+
+```text
+VPS_USE_TUNNEL=true
+```
+
+Set `VPS_USE_TUNNEL=true` if the VPS uses `deploy/docker-compose.tunnel.yml` for a no-domain Cloudflare Tunnel. The deploy intentionally does not run Docker Compose with `--remove-orphans`, because a webhook tunnel or reverse proxy may be managed outside the main bot compose file.
+
 Recommended setup:
 
 ```bash
@@ -252,6 +260,21 @@ cat ~/.ssh/whoamai_github_actions
 Paste the private key output into `VPS_SSH_KEY`. Keep `.env` only on the VPS; do not commit real tokens or phone numbers.
 
 The deploy uses `git pull --ff-only`, so it will fail instead of overwriting tracked edits made directly on the VPS. If deploy fails because of local VPS edits, either commit/stash them on the VPS or reset intentionally after reviewing them.
+
+When the Meta WhatsApp access token changes, update only the VPS `.env`:
+
+```bash
+cd ~/whoamai
+nano .env
+docker compose -f deploy/docker-compose.yml up -d --build
+```
+
+If the VPS uses the temporary Cloudflare Tunnel, restart with both compose files and update Meta's callback URL if the printed `trycloudflare.com` URL changed:
+
+```bash
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.tunnel.yml up -d --build
+./deploy/show-tunnel-url.sh
+```
 
 ## Optional GGUF Model Path
 
