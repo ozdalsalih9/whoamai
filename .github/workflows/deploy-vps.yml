@@ -61,4 +61,4 @@ jobs:
           curl -fsS http://127.0.0.1:8000/health
           docker ps --filter "name=whoamai-whatsapp-bot" --filter "status=running" --format "{{.Names}}" | grep -q '^whoamai-whatsapp-bot$'
           docker logs --tail=80 whoamai-whatsapp-bot
-REMOTE
+          REMOTE
