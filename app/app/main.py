@@ -157,6 +157,13 @@ PLAN_QUERY_WORDS = {
     "ne yapcan",
     "nereye gideceksin",
 }
+SELF_INTRO_WORDS = {
+    "kendinden bahset",
+    "kendini anlat",
+    "biraz kendinden bahset",
+    "mustafa kim",
+    "sen kimsin",
+}
 BANNED_REPLY_FRAGMENTS = (
     "ben bir yapay zeka",
     "bir yapay zeka",
@@ -184,6 +191,10 @@ GLOBAL_MEMORY_REPLY = "Tamam, bunu not aldim."
 MEMORY_STORE_FAILED_REPLY = "Su an not alamadim."
 STATUS_REPLY = "iyi kanka yuvarlan\u0131p gidioz"
 NO_PLAN_REPLY = "\u015fu anl\u0131k bi plan yok haberle\u015firiz yine"
+SELF_INTRO_REPLY = (
+    "Mustafa; teknik konularda direkt, sosyal konularda k\u0131sa ve samimi cevap veren, "
+    "proje ve AI taraf\u0131na odakl\u0131 biri."
+)
 MEMORY_TEXT_PREFIX = "Mustafa sunu hatirlamami istedi:"
 DIRECTIVE_PATTERNS = (
     r"\b(bunu\s+)?unutma\b",
@@ -234,7 +245,8 @@ def owner_wa_ids() -> set[str]:
 
 
 def is_owner_wa_id(wa_id: str) -> bool:
-    return wa_id in owner_wa_ids()
+    owners = owner_wa_ids()
+    return not owners or wa_id in owners
 
 
 def has_remember_signal(user_text: str) -> bool:
@@ -259,9 +271,16 @@ def is_short_praise(user_text: str) -> bool:
 
 def is_plan_query(user_text: str) -> bool:
     folded = fold_turkish(user_text)
+    if has_remember_signal(user_text):
+        return False
     if any(word in folded for word in PLAN_QUERY_WORDS):
         return True
     return bool(re.search(r"\b(\d+\s*(dakika|dk|saat)|yarim\s+saat)\s+sonra\b", folded))
+
+
+def is_self_intro_query(user_text: str) -> bool:
+    folded = fold_turkish(user_text)
+    return any(word in folded for word in SELF_INTRO_WORDS)
 
 
 def strip_memory_directives(user_text: str) -> str:
@@ -359,8 +378,14 @@ def active_global_plan_reply(now: datetime | None = None) -> str | None:
 
 
 def deterministic_reply(user_text: str) -> str | None:
+    if has_remember_signal(user_text):
+        return None
+
     if is_basic_status_message(user_text):
         return STATUS_REPLY
+
+    if is_self_intro_query(user_text):
+        return SELF_INTRO_REPLY
 
     if is_short_praise(user_text):
         digest = hashlib.sha256(fold_turkish(user_text).encode("utf-8")).hexdigest()
@@ -612,7 +637,7 @@ def clean_reply(reply: str, user_text: str, suheyla_mode: bool) -> str:
         return "Su an cevap uretemedim."
     cleaned = TRAILING_AI_HELP_RE.sub("", cleaned).strip(" .,!?\t\n")
     if not cleaned:
-        return "Tamam, bunu not aldim."
+        return "Bunu net bilmiyorum."
 
     user_folded = fold_turkish(user_text)
     allow_suheyla = suheyla_mode or "suheyla" in user_folded
@@ -634,7 +659,7 @@ def clean_reply(reply: str, user_text: str, suheyla_mode: bool) -> str:
         kept.append(sentence)
 
     if not kept:
-        return "Tamam, bunu not aldim."
+        return "Bunu net bilmiyorum."
 
     result = ". ".join(kept[:3]).strip()
     if result and result[-1] not in ".!?":

@@ -33,7 +33,9 @@ def test_deterministic_short_replies(monkeypatch) -> None:
 
     assert main.deterministic_reply("Naber kanka?") == main.STATUS_REPLY
     assert main.deterministic_reply("Naber React tarafinda durum ne?") is None
+    assert main.deterministic_reply("30dk sonra AVM ye gidecegim, unutma") is None
     assert main.deterministic_reply("Planin var mi bir seyler yapalim mi?") == main.NO_PLAN_REPLY
+    assert main.deterministic_reply("Bana biraz kendinden bahset") == main.SELF_INTRO_REPLY
     assert main.deterministic_reply("Cok iyi olmus.") in {"sa\u011fol", "eyw"}
 
 
@@ -73,3 +75,16 @@ def test_non_owner_explicit_memory_is_not_global(monkeypatch) -> None:
 
     assert reply is None
     assert fake_memory.added == []
+
+
+def test_explicit_memory_is_global_when_owner_list_is_empty(monkeypatch) -> None:
+    fake_memory = CapturingMemory()
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=main.ISTANBUL_TZ)
+    monkeypatch.setattr(main, "memory", fake_memory)
+    monkeypatch.setattr(main.settings, "owner_wa_ids", "")
+
+    reply = main.store_explicit_owner_memory("any-wa", "30dk sonra AVM ye gidecegim, unutma", now=now)
+
+    assert reply == main.GLOBAL_MEMORY_REPLY
+    assert fake_memory.added[0]["visibility"] == "global"
+    assert fake_memory.added[0]["expires_at_ts"] == now.timestamp() + 30 * 60

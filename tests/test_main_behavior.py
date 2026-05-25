@@ -26,6 +26,14 @@ def test_clean_reply_removes_classic_ai_help_closers() -> None:
     assert cleaned == "Tamam, not aldim."
 
 
+def test_clean_reply_does_not_turn_filtered_intro_into_memory_ack() -> None:
+    reply = "Ben bir yapay zeka olarak detay veremem."
+
+    cleaned = main.clean_reply(reply, "Bana biraz kendinden bahset", suheyla_mode=False)
+
+    assert cleaned == "Bunu net bilmiyorum."
+
+
 def test_load_history_keeps_last_six_messages_in_order_without_latest_user(monkeypatch) -> None:
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row
