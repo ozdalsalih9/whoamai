@@ -183,6 +183,18 @@ SELF_INTRO_WORDS = {
     "mustafa kim",
     "sen kimsin",
 }
+PROFILE_FACT_QUERIES = (
+    (("kac yas", "yas kac", "yasindasin", "yasiniz kac"), "Yas", "{} yasindayim."),
+    (("boyun kac", "boy kac", "kac boy"), "Boy", "Boyum {}."),
+    (("kilon kac", "kilo kac", "kac kilo"), "Kilo", "Kilom {}."),
+    (("hangi universite", "universiten", "nerede okudun", "nerede okuyorsun"), "Universite", "{}."),
+    (("hangi sehir", "nerede yasiyorsun", "nerede yasiyor", "sehrin neresi"), "Sehir", "{}."),
+    (("nerelisin", "memleket", "memleketin neresi"), "Memleket/bolge", "{}."),
+    (("tam adin", "ad soyad", "ismin ne", "ad ne"), "Tam ad", "{}."),
+    (("hangi takim", "takimin ne", "futbol takimin"), "Tuttugu futbol takimi", "{}."),
+    (("nba", "hangi nba", "nba oyuncusu"), "Takip ettigi NBA oyuncusu", "{}."),
+    (("goz rengin", "gozlerin ne renk"), "Goz rengi", "Goz rengim {}."),
+)
 QUERY_STOPWORDS = {
     "ben",
     "sen",
@@ -369,6 +381,59 @@ def parse_response_rule(user_text: str) -> ResponseRule | None:
         question_key = response_rule_key(question_text)
         if question_key and answer_text:
             return ResponseRule(question_text=question_text, question_key=question_key, answer_text=answer_text)
+    return None
+
+
+def persona_knowledge_paths() -> list[Path]:
+    configured = Path(settings.persona_knowledge_path)
+    repo_path = Path(__file__).resolve().parents[2] / "knowledge" / "mustafa_persona.md"
+    paths = [configured]
+    if repo_path != configured:
+        paths.append(repo_path)
+    return paths
+
+
+def read_persona_knowledge() -> str:
+    for path in persona_knowledge_paths():
+        try:
+            if path.exists():
+                return path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    return ""
+
+
+def extract_profile_fact(label: str) -> str | None:
+    knowledge = read_persona_knowledge()
+    if not knowledge:
+        return None
+
+    label_key = fold_turkish(label)
+    for line in knowledge.splitlines():
+        cleaned = line.strip()
+        if not cleaned.startswith("- "):
+            continue
+        body = cleaned[2:]
+        if ":" not in body:
+            continue
+        raw_label, raw_value = body.split(":", 1)
+        if fold_turkish(raw_label.strip()) != label_key:
+            continue
+        value = re.split(r"\.\s*\(guven|\s*\(guven", raw_value.strip(), maxsplit=1)[0]
+        value = value.strip(" .")
+        return value or None
+    return None
+
+
+def profile_fact_reply(user_text: str) -> str | None:
+    folded = fold_turkish(user_text)
+    for triggers, label, template in PROFILE_FACT_QUERIES:
+        if not any(trigger in folded for trigger in triggers):
+            continue
+        value = extract_profile_fact(label)
+        if value is None:
+            return None
+        return template.format(value)
     return None
 
 
@@ -640,6 +705,10 @@ def deterministic_reply(user_text: str) -> str | None:
     learned = learned_response_reply(user_text)
     if learned is not None:
         return learned
+
+    profile_fact = profile_fact_reply(user_text)
+    if profile_fact is not None:
+        return profile_fact
 
     if is_basic_status_message(user_text):
         return STATUS_REPLY

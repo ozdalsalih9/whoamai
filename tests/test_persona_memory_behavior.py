@@ -70,6 +70,12 @@ def test_learned_response_rule_overrides_default(monkeypatch) -> None:
     assert main.deterministic_reply("Naber?") == "iyi kanka yuvarlanip gidioz"
 
 
+def test_profile_questions_use_persona_knowledge() -> None:
+    assert main.deterministic_reply("Kac yasindasin?") == "22 yasindayim."
+    assert main.deterministic_reply("Boyun kac?") == "Boyum 178."
+    assert "D\u00fczce" in main.deterministic_reply("Hangi universite?")
+
+
 def test_deterministic_plan_query_uses_active_global_plan(monkeypatch) -> None:
     context = "[GLOBAL_PLAN: WhatsApp Memory]\nMustafa sunu hatirlamami istedi: 30 dakika sonra AVM ye gidecegim."
     monkeypatch.setattr(main, "memory", CapturingMemory(global_plan_context=context))
