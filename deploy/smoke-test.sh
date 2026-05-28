@@ -39,14 +39,14 @@ curl --max-time 180 -fsS http://127.0.0.1:11434/api/chat \
     ]
   }' >/dev/null
 
-echo "Checking WhatsApp bot container..."
-docker ps --filter "name=whoamai-whatsapp-bot" --filter "status=running" --format "{{.Names}}" | grep -q '^whoamai-whatsapp-bot$'
+echo "Checking Telegram bot container..."
+docker ps --filter "name=whoamai-telegram-bot" --filter "status=running" --format "{{.Names}}" | grep -q '^whoamai-telegram-bot$'
 
-echo "Checking WhatsApp bot health endpoint..."
+echo "Checking Telegram bot health endpoint..."
 curl -fsS http://127.0.0.1:8000/health >/dev/null
 
-echo "Checking WhatsApp bot can reach Ollama through Docker host gateway..."
-docker exec whoamai-whatsapp-bot python - <<'PY'
+echo "Checking Telegram bot can reach Ollama through Docker host gateway..."
+docker exec whoamai-telegram-bot python - <<'PY'
 import os
 import httpx
 

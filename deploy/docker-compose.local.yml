@@ -8,11 +8,11 @@ services:
     volumes:
       - whoamai-ollama:/root/.ollama
 
-  whatsapp-bot:
+  telegram-bot:
     build:
       context: ..
       dockerfile: app/Dockerfile
-    container_name: whoamai-whatsapp-bot
+    container_name: whoamai-telegram-bot
     restart: unless-stopped
     depends_on:
       - ollama

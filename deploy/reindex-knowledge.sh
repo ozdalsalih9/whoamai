@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-docker exec whoamai-whatsapp-bot python /app/scripts/load_knowledge_to_chroma.py \
+docker exec whoamai-telegram-bot python /app/scripts/load_knowledge_to_chroma.py \
   --knowledge /app/knowledge/mustafa_persona.md \
   --chroma-path /app/data/chroma \
   --collection mustafa_persona \

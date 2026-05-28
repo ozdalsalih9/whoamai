@@ -86,7 +86,7 @@ def test_profile_questions_use_persona_knowledge() -> None:
 
 
 def test_deterministic_plan_query_uses_active_global_plan(monkeypatch) -> None:
-    context = "[GLOBAL_PLAN: WhatsApp Memory]\nMustafa sunu hatirlamami istedi: 30 dakika sonra AVM ye gidecegim."
+    context = "[GLOBAL_PLAN: Telegram Memory]\nMustafa sunu hatirlamami istedi: 30 dakika sonra AVM ye gidecegim."
     monkeypatch.setattr(main, "memory", CapturingMemory(global_plan_context=context))
 
     reply = main.deterministic_reply("Yarim saat sonra ne yapacaksin?")
@@ -96,9 +96,9 @@ def test_deterministic_plan_query_uses_active_global_plan(monkeypatch) -> None:
 
 def test_deterministic_plan_query_prefers_matching_weekday(monkeypatch) -> None:
     context = (
-        "[GLOBAL_PLAN: WhatsApp Memory]\n"
+        "[GLOBAL_PLAN: Telegram Memory]\n"
         "Mustafa sunu hatirlamami istedi: 30 dakika sonra AVM ye gidecegim.\n\n"
-        "[GLOBAL_PLAN: WhatsApp Memory]\n"
+        "[GLOBAL_PLAN: Telegram Memory]\n"
         "Mustafa sunu hatirlamami istedi: Cuma gunu Suheyla'ya kavusacagim."
     )
     monkeypatch.setattr(main, "memory", CapturingMemory(global_plan_context=context))
@@ -110,8 +110,8 @@ def test_deterministic_plan_query_prefers_matching_weekday(monkeypatch) -> None:
 
 
 def test_weekday_query_can_use_older_global_fact_memory(monkeypatch) -> None:
-    plan_context = "[GLOBAL_PLAN: WhatsApp Memory]\nMustafa sunu hatirlamami istedi: 30 dakika sonra AVM ye gidecegim."
-    fact_context = "[GLOBAL_MEMORY: WhatsApp Memory]\nMustafa sunu hatirlamami istedi: Cuma gunu Suheyla'ya kavusacagim."
+    plan_context = "[GLOBAL_PLAN: Telegram Memory]\nMustafa sunu hatirlamami istedi: 30 dakika sonra AVM ye gidecegim."
+    fact_context = "[GLOBAL_MEMORY: Telegram Memory]\nMustafa sunu hatirlamami istedi: Cuma gunu Suheyla'ya kavusacagim."
     monkeypatch.setattr(
         main,
         "memory",
@@ -128,16 +128,16 @@ def test_owner_explicit_memory_is_global_and_temporary(monkeypatch) -> None:
     fake_memory = CapturingMemory()
     now = datetime(2026, 1, 1, 12, 0, tzinfo=main.ISTANBUL_TZ)
     monkeypatch.setattr(main, "memory", fake_memory)
-    monkeypatch.setattr(main.settings, "owner_wa_ids", "owner-wa")
+    monkeypatch.setattr(main.settings, "owner_telegram_ids", "owner-user")
 
-    reply = main.store_explicit_owner_memory("owner-wa", "30 dakika sonra AVM ye gidecegim bunu unutma", now=now)
+    reply = main.store_explicit_owner_memory("owner-user", "30 dakika sonra AVM ye gidecegim bunu unutma", now=now)
 
     assert reply == main.GLOBAL_MEMORY_REPLY
     assert len(fake_memory.added) == 1
     stored = fake_memory.added[0]
     assert stored["visibility"] == "global"
     assert stored["memory_kind"] == "plan"
-    assert stored["owner_hash"] == main.user_hash("owner-wa")
+    assert stored["owner_hash"] == main.user_hash("owner-user")
     assert stored["expires_at_ts"] == now.timestamp() + 30 * 60
     assert "AVM ye gidecegim" in str(stored["text"])
 
@@ -147,10 +147,10 @@ def test_weekday_memory_is_stored_as_expiring_plan(monkeypatch) -> None:
     now = datetime(2026, 5, 25, 12, 0, tzinfo=main.ISTANBUL_TZ)
     friday_end = datetime(2026, 5, 29, 23, 59, 59, tzinfo=main.ISTANBUL_TZ)
     monkeypatch.setattr(main, "memory", fake_memory)
-    monkeypatch.setattr(main.settings, "owner_wa_ids", "owner-wa")
+    monkeypatch.setattr(main.settings, "owner_telegram_ids", "owner-user")
 
     reply = main.store_explicit_owner_memory(
-        "owner-wa",
+        "owner-user",
         "Cuma gunu Suheyla'ya kavusacagim unutma",
         now=now,
     )
@@ -166,10 +166,10 @@ def test_response_rule_memory_is_stored_with_question_metadata(monkeypatch) -> N
     fake_memory = CapturingMemory()
     now = datetime(2026, 5, 25, 12, 0, tzinfo=main.ISTANBUL_TZ)
     monkeypatch.setattr(main, "memory", fake_memory)
-    monkeypatch.setattr(main.settings, "owner_wa_ids", "owner-wa")
+    monkeypatch.setattr(main.settings, "owner_telegram_ids", "owner-user")
 
     reply = main.store_explicit_owner_memory(
-        "owner-wa",
+        "owner-user",
         'Ben "Naber?" sorusuna "iyi kanka yuvarlanip gidioz" diye cevap veririm, unutma',
         now=now,
     )
@@ -186,9 +186,9 @@ def test_explicit_memory_with_time_is_plan_without_action_keyword(monkeypatch) -
     fake_memory = CapturingMemory()
     now = datetime(2026, 5, 25, 12, 0, tzinfo=main.ISTANBUL_TZ)
     monkeypatch.setattr(main, "memory", fake_memory)
-    monkeypatch.setattr(main.settings, "owner_wa_ids", "owner-wa")
+    monkeypatch.setattr(main.settings, "owner_telegram_ids", "owner-user")
 
-    reply = main.store_explicit_owner_memory("owner-wa", "2 gun sonra final sinavim var unutma", now=now)
+    reply = main.store_explicit_owner_memory("owner-user", "2 gun sonra final sinavim var unutma", now=now)
 
     assert reply == main.GLOBAL_MEMORY_REPLY
     assert fake_memory.added[0]["memory_kind"] == "plan"
@@ -199,9 +199,9 @@ def test_explicit_memory_with_clock_time_is_expiring_plan(monkeypatch) -> None:
     fake_memory = CapturingMemory()
     now = datetime(2026, 5, 25, 12, 0, tzinfo=main.ISTANBUL_TZ)
     monkeypatch.setattr(main, "memory", fake_memory)
-    monkeypatch.setattr(main.settings, "owner_wa_ids", "owner-wa")
+    monkeypatch.setattr(main.settings, "owner_telegram_ids", "owner-user")
 
-    reply = main.store_explicit_owner_memory("owner-wa", "Bugun saat 17:30 spor var unutma", now=now)
+    reply = main.store_explicit_owner_memory("owner-user", "Bugun saat 17:30 spor var unutma", now=now)
 
     assert reply == main.GLOBAL_MEMORY_REPLY
     assert fake_memory.added[0]["memory_kind"] == "plan"
@@ -211,9 +211,9 @@ def test_explicit_memory_with_clock_time_is_expiring_plan(monkeypatch) -> None:
 
 def test_plan_selection_uses_generic_content_overlap(monkeypatch) -> None:
     context = (
-        "[GLOBAL_PLAN: WhatsApp Memory]\n"
+        "[GLOBAL_PLAN: Telegram Memory]\n"
         "Mustafa sunu hatirlamami istedi: Bugun saat 17:30 spor var.\n\n"
-        "[GLOBAL_PLAN: WhatsApp Memory]\n"
+        "[GLOBAL_PLAN: Telegram Memory]\n"
         "Mustafa sunu hatirlamami istedi: Yarin tez sunumuna hazirlanacagim."
     )
     monkeypatch.setattr(main, "memory", CapturingMemory(global_plan_context=context))
@@ -227,9 +227,9 @@ def test_plan_selection_uses_generic_content_overlap(monkeypatch) -> None:
 def test_non_owner_explicit_memory_is_not_global(monkeypatch) -> None:
     fake_memory = CapturingMemory()
     monkeypatch.setattr(main, "memory", fake_memory)
-    monkeypatch.setattr(main.settings, "owner_wa_ids", "owner-wa")
+    monkeypatch.setattr(main.settings, "owner_telegram_ids", "owner-user")
 
-    reply = main.store_explicit_owner_memory("other-wa", "30 dakika sonra AVM ye gidecegim bunu unutma")
+    reply = main.store_explicit_owner_memory("other-user", "30 dakika sonra AVM ye gidecegim bunu unutma")
 
     assert reply is None
     assert fake_memory.added == []
@@ -239,7 +239,7 @@ def test_explicit_memory_is_not_global_when_owner_list_is_empty(monkeypatch) -> 
     fake_memory = CapturingMemory()
     now = datetime(2026, 1, 1, 12, 0, tzinfo=main.ISTANBUL_TZ)
     monkeypatch.setattr(main, "memory", fake_memory)
-    monkeypatch.setattr(main.settings, "owner_wa_ids", "")
+    monkeypatch.setattr(main.settings, "owner_telegram_ids", "")
 
     reply = main.store_explicit_owner_memory("any-wa", "30dk sonra AVM ye gidecegim, unutma", now=now)
 

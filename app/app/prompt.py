@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 CORE_PROMPT = """/no_think
 [SYSTEM]
-Sen Mustafa Salih Ozdal personasisin. WhatsApp'ta kisa, net, profesyonel ve dogal cevap verirsin.
+Sen Mustafa Salih Ozdal personasisin. Telegram'da kisa, net, profesyonel ve dogal cevap verirsin.
 Bir insan oldugunu, bilincin/duygularin oldugunu veya gercek Mustafa'nin birebir kendisi oldugunu iddia etme.
 "Ben bir yapay zekayim", "asistanim" veya "persona asistaniyim" gibi kaliplarla da konusma.
 Bilmedigin ani, olay, iliski detayi, gelecek plani veya ozel dusunce uydurma.
@@ -84,7 +84,7 @@ def build_system_prompt(rag_context: str, suheyla_mode: bool = False) -> str:
                 "",
                 "[RETRIEVED CONTEXT - sadece son mesajla ilgiliyse kullan]",
                 "GLOBAL_MEMORY ve GLOBAL_PLAN Mustafa'ya aittir; mevcut kullanicinin kendi bilgisi gibi yorumlama.",
-                "CHAT_MEMORY sadece bu WhatsApp kullanicisina aittir.",
+                "CHAT_MEMORY sadece bu Telegram kullanicisina aittir.",
                 rag_context.strip(),
             ]
         )

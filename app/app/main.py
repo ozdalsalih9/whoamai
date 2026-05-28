@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import re
@@ -11,8 +12,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, Request
 from pydantic_settings import BaseSettings
 
 from app.prompt import build_memory_extraction_prompt, build_system_prompt
@@ -40,21 +40,22 @@ class Settings(BaseSettings):
     memory_extraction_model: str = "mustafa-persona:0.6b"
     memory_extraction_num_ctx: int = 512
     memory_max_chars: int = 240
-    whatsapp_verify_token: str
-    whatsapp_access_token: str
-    whatsapp_phone_number_id: str
-    whatsapp_graph_api_version: str = "v25.0"
+    telegram_bot_token: str = ""
+    telegram_polling_enabled: bool = True
+    telegram_poll_interval_seconds: float = 1.0
+    telegram_request_timeout: int = 50
     bot_database_path: str = "/app/data/whoamai-bot.db"
     activation_phrase: str = "hey mustafa, baslat"
-    stop_phrases: str = "durdur,bitir,kapat"
-    owner_wa_ids: str = ""
+    stop_phrases: str = "/stop,durdur,bitir,kapat"
+    owner_telegram_ids: str = ""
     max_history_messages: int = 6
     processed_message_retention_days: int = 7
 
 
 settings = Settings()
-app = FastAPI(title="WhoAmAI WhatsApp Bot")
+app = FastAPI(title="WhoAmAI Telegram Bot")
 memory: ChromaMemory | None = None
+telegram_polling_task: asyncio.Task[None] | None = None
 
 TURKISH_CHAR_MAP = str.maketrans(
     {
@@ -243,7 +244,7 @@ BANNED_REPLY_FRAGMENTS = (
 ISTANBUL_TZ = ZoneInfo("Europe/Istanbul")
 GLOBAL_MEMORY_REPLY = "Tamam, bunu not aldim."
 MEMORY_STORE_FAILED_REPLY = "Su an not alamadim."
-OWNER_NOT_CONFIGURED_REPLY = "Global hafiza icin OWNER_WA_IDS ayarli degil."
+OWNER_NOT_CONFIGURED_REPLY = "Global hafiza icin OWNER_TELEGRAM_IDS ayarli degil."
 NOT_OWNER_MEMORY_REPLY = "Bunu global hafizaya kaydedemem."
 STATUS_REPLY = "iyi kanka yuvarlan\u0131p gidioz"
 NO_PLAN_REPLY = "\u015fu anl\u0131k bi plan yok haberle\u015firiz yine"
@@ -295,24 +296,29 @@ def fold_turkish(value: str) -> str:
     return " ".join(value.lower().split())
 
 
-def user_hash(wa_id: str) -> str:
-    return hashlib.sha256(f"whatsapp:{wa_id}".encode("utf-8")).hexdigest()[:32]
+def user_hash(user_id: str) -> str:
+    return hashlib.sha256(f"telegram:{user_id}".encode("utf-8")).hexdigest()[:32]
 
 
 def now_istanbul() -> datetime:
     return datetime.now(ISTANBUL_TZ)
 
 
-def owner_wa_ids() -> set[str]:
-    return {item.strip() for item in settings.owner_wa_ids.split(",") if item.strip()}
+def owner_telegram_ids() -> set[str]:
+    return {item.strip() for item in settings.owner_telegram_ids.split(",") if item.strip()}
 
 
 def owner_configured() -> bool:
-    return bool(owner_wa_ids())
+    return bool(owner_telegram_ids())
 
 
-def is_owner_wa_id(wa_id: str) -> bool:
-    return wa_id in owner_wa_ids()
+def is_owner_user_id(user_id: str) -> bool:
+    return user_id in owner_telegram_ids()
+
+
+def telegram_token_configured() -> bool:
+    token = settings.telegram_bot_token.strip()
+    return bool(token) and not token.startswith("change-this-")
 
 
 def has_remember_signal(user_text: str) -> bool:
@@ -812,7 +818,7 @@ def init_db() -> None:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS sessions (
-                wa_id TEXT PRIMARY KEY,
+                user_id TEXT PRIMARY KEY,
                 active INTEGER NOT NULL DEFAULT 0,
                 suheyla_mode INTEGER NOT NULL DEFAULT 0,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -823,19 +829,31 @@ def init_db() -> None:
             row["name"]
             for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
         }
+        if "wa_id" in columns and "user_id" not in columns:
+            connection.execute("ALTER TABLE sessions RENAME COLUMN wa_id TO user_id")
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+            }
         if "suheyla_mode" not in columns:
             connection.execute("ALTER TABLE sessions ADD COLUMN suheyla_mode INTEGER NOT NULL DEFAULT 0")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                wa_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        message_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        if "wa_id" in message_columns and "user_id" not in message_columns:
+            connection.execute("ALTER TABLE messages RENAME COLUMN wa_id TO user_id")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS processed_messages (
@@ -852,8 +870,8 @@ def init_db() -> None:
 
 
 @app.on_event("startup")
-def startup() -> None:
-    global memory
+async def startup() -> None:
+    global memory, telegram_polling_task
     init_db()
     embedder = OllamaEmbedder(settings.ollama_base_url, settings.embedding_model)
     memory = ChromaMemory(
@@ -869,55 +887,70 @@ def startup() -> None:
             print(json.dumps({"event": "rag_indexed", "chunks": count, "scope": "persona"}))
     except Exception as exc:
         print(json.dumps({"event": "rag_index_failed", "error": str(exc)}))
+    if settings.telegram_polling_enabled and telegram_token_configured():
+        telegram_polling_task = asyncio.create_task(telegram_polling_loop())
+        print(json.dumps({"event": "telegram_polling_started"}))
 
 
-def is_active(wa_id: str) -> bool:
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    global telegram_polling_task
+    if telegram_polling_task is not None:
+        telegram_polling_task.cancel()
+        try:
+            await telegram_polling_task
+        except asyncio.CancelledError:
+            pass
+        telegram_polling_task = None
+
+
+def is_active(user_id: str) -> bool:
     with db() as connection:
-        row = connection.execute("SELECT active FROM sessions WHERE wa_id = ?", (wa_id,)).fetchone()
+        row = connection.execute("SELECT active FROM sessions WHERE user_id = ?", (user_id,)).fetchone()
         return bool(row and row["active"])
 
 
-def set_active(wa_id: str, active: bool) -> None:
+def set_active(user_id: str, active: bool) -> None:
     with db() as connection:
         connection.execute(
             """
-            INSERT INTO sessions (wa_id, active, updated_at)
+            INSERT INTO sessions (user_id, active, updated_at)
             VALUES (?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(wa_id) DO UPDATE SET active = excluded.active, updated_at = CURRENT_TIMESTAMP
+            ON CONFLICT(user_id) DO UPDATE SET active = excluded.active, updated_at = CURRENT_TIMESTAMP
             """,
-            (wa_id, 1 if active else 0),
+            (user_id, 1 if active else 0),
         )
 
 
-def is_suheyla_mode(wa_id: str) -> bool:
+def is_suheyla_mode(user_id: str) -> bool:
     with db() as connection:
-        row = connection.execute("SELECT suheyla_mode FROM sessions WHERE wa_id = ?", (wa_id,)).fetchone()
+        row = connection.execute("SELECT suheyla_mode FROM sessions WHERE user_id = ?", (user_id,)).fetchone()
         return bool(row and row["suheyla_mode"])
 
 
-def set_suheyla_mode(wa_id: str, active: bool) -> None:
+def set_suheyla_mode(user_id: str, active: bool) -> None:
     with db() as connection:
         connection.execute(
             """
-            INSERT INTO sessions (wa_id, active, suheyla_mode, updated_at)
+            INSERT INTO sessions (user_id, active, suheyla_mode, updated_at)
             VALUES (?, 1, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(wa_id) DO UPDATE SET suheyla_mode = excluded.suheyla_mode, updated_at = CURRENT_TIMESTAMP
+            ON CONFLICT(user_id) DO UPDATE SET suheyla_mode = excluded.suheyla_mode, updated_at = CURRENT_TIMESTAMP
             """,
-            (wa_id, 1 if active else 0),
+            (user_id, 1 if active else 0),
         )
 
 
-def remember(wa_id: str, role: str, content: str) -> None:
+def remember(user_id: str, role: str, content: str) -> None:
     with db() as connection:
         connection.execute(
-            "INSERT INTO messages (wa_id, role, content) VALUES (?, ?, ?)",
-            (wa_id, role, content),
+            "INSERT INTO messages (user_id, role, content) VALUES (?, ?, ?)",
+            (user_id, role, content),
         )
 
 
-def clear_history(wa_id: str) -> None:
+def clear_history(user_id: str) -> None:
     with db() as connection:
-        connection.execute("DELETE FROM messages WHERE wa_id = ?", (wa_id,))
+        connection.execute("DELETE FROM messages WHERE user_id = ?", (user_id,))
 
 
 def already_processed(message_id: str) -> bool:
@@ -929,17 +962,17 @@ def already_processed(message_id: str) -> bool:
             return True
 
 
-def load_history(wa_id: str, exclude_latest_user_text: str | None = None) -> list[dict[str, str]]:
+def load_history(user_id: str, exclude_latest_user_text: str | None = None) -> list[dict[str, str]]:
     with db() as connection:
         rows = connection.execute(
             """
             SELECT id, role, content
             FROM messages
-            WHERE wa_id = ?
+            WHERE user_id = ?
             ORDER BY id DESC
             LIMIT ?
             """,
-            (wa_id, settings.max_history_messages),
+            (user_id, settings.max_history_messages),
         ).fetchall()
     history: list[dict[str, str]] = []
     excluded = normalize_text(exclude_latest_user_text) if exclude_latest_user_text else None
@@ -966,8 +999,8 @@ def load_history(wa_id: str, exclude_latest_user_text: str | None = None) -> lis
     return history
 
 
-def store_explicit_owner_memory(wa_id: str, user_text: str, now: datetime | None = None) -> str | None:
-    if memory is None or not is_owner_wa_id(wa_id) or not has_remember_signal(user_text):
+def store_explicit_owner_memory(user_id: str, user_text: str, now: datetime | None = None) -> str | None:
+    if memory is None or not is_owner_user_id(user_id) or not has_remember_signal(user_text):
         return None
 
     current = now or now_istanbul()
@@ -983,13 +1016,13 @@ def store_explicit_owner_memory(wa_id: str, user_text: str, now: datetime | None
         memory_id = memory.add_chat_memory(
             memory_text,
             timestamp,
-            user_hash=user_hash(wa_id),
+            user_hash=user_hash(user_id),
             memory_kind=timing.memory_kind,
             visibility="global",
             created_at_ts=current.timestamp(),
             event_at_ts=timing.event_at.timestamp() if timing.event_at is not None else None,
             expires_at_ts=timing.expires_at.timestamp() if timing.expires_at is not None else None,
-            owner_hash=user_hash(wa_id),
+            owner_hash=user_hash(user_id),
             question_key=rule.question_key if rule is not None else None,
             question_text=rule.question_text if rule is not None else None,
             answer_text=rule.answer_text if rule is not None else None,
@@ -1062,7 +1095,7 @@ def ollama_options() -> dict[str, int | float]:
     return options
 
 
-async def ask_ollama(wa_id: str, user_text: str) -> str:
+async def ask_ollama(user_id: str, user_text: str) -> str:
     deterministic = deterministic_reply(user_text)
     if deterministic is not None:
         return deterministic
@@ -1083,7 +1116,7 @@ async def ask_ollama(wa_id: str, user_text: str) -> str:
             )
             chat_context = memory.retrieve_chat_memory(
                 user_text,
-                user_hash=user_hash(wa_id),
+                user_hash=user_hash(user_id),
                 top_k=settings.rag_top_k,
                 now_ts=now_ts,
             )
@@ -1095,10 +1128,10 @@ async def ask_ollama(wa_id: str, user_text: str) -> str:
         except Exception as exc:
             print(json.dumps({"event": "rag_retrieve_failed", "error": str(exc)}))
 
-    suheyla_mode = is_suheyla_mode(wa_id)
+    suheyla_mode = is_suheyla_mode(user_id)
     rag_context = "\n\n".join(rag_sections)
     messages = [{"role": "system", "content": build_system_prompt(rag_context, suheyla_mode=suheyla_mode)}]
-    messages.extend(load_history(wa_id, exclude_latest_user_text=user_text))
+    messages.extend(load_history(user_id, exclude_latest_user_text=user_text))
     messages.append({"role": "user", "content": user_text})
 
     payload = {
@@ -1117,7 +1150,7 @@ async def ask_ollama(wa_id: str, user_text: str) -> str:
         return clean_reply(raw_reply, user_text, suheyla_mode)
 
 
-async def extract_and_store_memory(wa_id: str, user_text: str, assistant_text: str) -> None:
+async def extract_and_store_memory(user_id: str, user_text: str, assistant_text: str) -> None:
     print(json.dumps({"event": "memory_task_started"}))
     if not settings.memory_extraction_enabled or memory is None:
         print(
@@ -1179,7 +1212,7 @@ async def extract_and_store_memory(wa_id: str, user_text: str, assistant_text: s
         memory_id = memory.add_chat_memory(
             extracted,
             timestamp,
-            user_hash=user_hash(wa_id),
+            user_hash=user_hash(user_id),
             memory_kind=timing.memory_kind,
             visibility="private",
             created_at_ts=current.timestamp(),
@@ -1193,64 +1226,187 @@ async def extract_and_store_memory(wa_id: str, user_text: str, assistant_text: s
     print(json.dumps({"event": "memory_stored", "id": memory_id, "memory": extracted}, ensure_ascii=False))
 
 
-async def send_whatsapp_text(to: str, text: str) -> None:
-    url = (
-        f"https://graph.facebook.com/{settings.whatsapp_graph_api_version}/"
-        f"{settings.whatsapp_phone_number_id}/messages"
-    )
-    headers = {
-        "Authorization": f"Bearer {settings.whatsapp_access_token}",
-        "Content-Type": "application/json",
-    }
+def telegram_api_url(method: str) -> str:
+    if not telegram_token_configured():
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured.")
+    return f"https://api.telegram.org/bot{settings.telegram_bot_token}/{method}"
+
+
+async def send_telegram_text(chat_id: str, text: str) -> None:
     payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "text",
-        "text": {"preview_url": False, "body": text[:4000]},
+        "chat_id": chat_id,
+        "text": text[:4096],
+        "disable_web_page_preview": True,
     }
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(url, headers=headers, json=payload)
+        response = await client.post(telegram_api_url("sendMessage"), json=payload)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             print(
                 json.dumps(
                     {
-                        "error": "whatsapp_send_failed",
+                        "error": "telegram_send_failed",
                         "status_code": exc.response.status_code,
                         "response": exc.response.text,
-                        "wa_id": to,
-                    }
+                        "chat_id": chat_id,
+                    },
+                    ensure_ascii=False,
                 )
             )
             raise
 
 
-def extract_messages(payload: dict[str, Any]) -> list[dict[str, str]]:
-    extracted: list[dict[str, str]] = []
-    for entry in payload.get("entry", []):
-        for change in entry.get("changes", []):
-            value = change.get("value", {})
-            for message in value.get("messages", []):
-                if message.get("type") != "text":
-                    extracted.append(
-                        {
-                            "id": message.get("id", ""),
-                            "from": message.get("from", ""),
-                            "text": "",
-                            "type": message.get("type", "unknown"),
-                        }
-                    )
-                    continue
-                extracted.append(
-                    {
-                        "id": message.get("id", ""),
-                        "from": message.get("from", ""),
-                        "text": message.get("text", {}).get("body", ""),
-                        "type": "text",
-                    }
-                )
-    return [item for item in extracted if item["id"] and item["from"]]
+def extract_telegram_message(update: dict[str, Any]) -> dict[str, str] | None:
+    message = update.get("message")
+    if not isinstance(message, dict):
+        return None
+
+    chat = message.get("chat")
+    if not isinstance(chat, dict) or chat.get("id") is None:
+        return None
+
+    update_id = str(update.get("update_id", ""))
+    message_id = str(message.get("message_id", ""))
+    chat_id = str(chat["id"])
+    text = message.get("text")
+    if isinstance(text, str) and text.strip():
+        return {
+            "id": update_id or f"{chat_id}:{message_id}",
+            "chat_id": chat_id,
+            "text": text,
+            "type": "text",
+        }
+
+    return {
+        "id": update_id or f"{chat_id}:{message_id}",
+        "chat_id": chat_id,
+        "text": "",
+        "type": "non_text",
+    }
+
+
+def is_activation_text(value: str) -> bool:
+    folded = fold_turkish(value).strip()
+    return folded == "/start" or folded.startswith("/start ") or phrase_matches(value, settings.activation_phrase)
+
+
+async def process_user_text(user_id: str, text: str) -> None:
+    if is_activation_text(text):
+        set_active(user_id, True)
+        set_suheyla_mode(user_id, False)
+        clear_history(user_id)
+        remember(user_id, "user", text)
+        reply = "Baslattim. Artik Mustafa persona ile konusabilirsin."
+        remember(user_id, "assistant", reply)
+        await send_telegram_text(user_id, reply)
+        return
+
+    if is_stop_phrase(text):
+        set_active(user_id, False)
+        set_suheyla_mode(user_id, False)
+        clear_history(user_id)
+        reply = "Tamam, bu sohbeti durdurdum. Tekrar baslatmak icin /start yaz."
+        await send_telegram_text(user_id, reply)
+        return
+
+    if not is_active(user_id):
+        await send_telegram_text(user_id, "Baslamak icin /start yaz.")
+        return
+
+    folded_text = fold_turkish(text)
+    if "ben suheyla" in folded_text:
+        set_suheyla_mode(user_id, True)
+    elif "ben mustafa" in folded_text or "suheyla degilim" in folded_text:
+        set_suheyla_mode(user_id, False)
+
+    remember(user_id, "user", text)
+    schedule_memory_extraction = True
+    memory_write_attempted = has_remember_signal(text)
+    owner_memory_attempted = is_owner_user_id(user_id) and memory_write_attempted
+    reply = store_explicit_owner_memory(user_id, text)
+    if reply is not None:
+        schedule_memory_extraction = False
+    elif owner_memory_attempted:
+        reply = MEMORY_STORE_FAILED_REPLY
+        schedule_memory_extraction = False
+    elif memory_write_attempted and not owner_configured():
+        reply = OWNER_NOT_CONFIGURED_REPLY
+        schedule_memory_extraction = False
+    elif memory_write_attempted:
+        reply = NOT_OWNER_MEMORY_REPLY
+        schedule_memory_extraction = False
+    else:
+        reply = deterministic_reply(text)
+        if reply is not None:
+            schedule_memory_extraction = False
+        else:
+            try:
+                reply = await ask_ollama(user_id, text)
+            except httpx.HTTPError as exc:
+                reply = "Su an local modelden cevap alamiyorum. Birazdan tekrar dener misin?"
+                print(json.dumps({"error": str(exc), "user_id": user_id}))
+    remember(user_id, "assistant", reply)
+    if schedule_memory_extraction:
+        asyncio.create_task(extract_and_store_memory(user_id, text, reply))
+        print(json.dumps({"event": "memory_task_scheduled", "user_hash": user_hash(user_id)}))
+    await send_telegram_text(user_id, reply)
+
+
+async def handle_telegram_update(update: dict[str, Any]) -> None:
+    message = extract_telegram_message(update)
+    if message is None:
+        return
+
+    chat_id = message["chat_id"]
+    if message["type"] != "text":
+        try:
+            await send_telegram_text(chat_id, "Simdilik sadece yazili mesajlara cevap verebiliyorum.")
+        except httpx.HTTPError:
+            pass
+        return
+
+    try:
+        await process_user_text(chat_id, message["text"])
+    except httpx.HTTPError:
+        pass
+
+
+async def telegram_polling_loop() -> None:
+    offset: int | None = None
+    while True:
+        try:
+            params: dict[str, Any] = {
+                "timeout": settings.telegram_request_timeout,
+                "allowed_updates": json.dumps(["message"]),
+            }
+            if offset is not None:
+                params["offset"] = offset
+            async with httpx.AsyncClient(timeout=settings.telegram_request_timeout + 10) as client:
+                response = await client.get(telegram_api_url("getUpdates"), params=params)
+                response.raise_for_status()
+                data = response.json()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(json.dumps({"event": "telegram_polling_failed", "error": str(exc)}))
+            await asyncio.sleep(max(settings.telegram_poll_interval_seconds, 1.0))
+            continue
+
+        for update in data.get("result", []):
+            if not isinstance(update, dict):
+                continue
+            update_id = update.get("update_id")
+            if isinstance(update_id, int):
+                offset = update_id + 1
+                processed_key = f"telegram:{update_id}"
+            else:
+                processed_key = f"telegram:{json.dumps(update, sort_keys=True)}"
+            if already_processed(processed_key):
+                continue
+            await handle_telegram_update(update)
+
+        await asyncio.sleep(settings.telegram_poll_interval_seconds)
 
 
 @app.get("/health")
@@ -1258,104 +1414,11 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/webhook/whatsapp", response_class=PlainTextResponse)
-def verify_webhook(
-    hub_mode: str = Query(alias="hub.mode"),
-    hub_verify_token: str = Query(alias="hub.verify_token"),
-    hub_challenge: str = Query(alias="hub.challenge"),
-) -> str:
-    if hub_mode == "subscribe" and hub_verify_token == settings.whatsapp_verify_token:
-        return hub_challenge
-    raise HTTPException(status_code=403, detail="Invalid verify token")
-
-
-@app.post("/webhook/whatsapp")
-async def receive_webhook(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
+@app.post("/webhook/telegram")
+async def receive_telegram_webhook(request: Request) -> dict[str, str]:
     payload = await request.json()
-    for message in extract_messages(payload):
-        if already_processed(message["id"]):
-            continue
-
-        wa_id = message["from"]
-        text = message["text"]
-
-        if message["type"] != "text":
-            try:
-                await send_whatsapp_text(wa_id, "Simdilik sadece yazili mesajlara cevap verebiliyorum.")
-            except httpx.HTTPError:
-                pass
-            continue
-
-        if phrase_matches(text, settings.activation_phrase):
-            set_active(wa_id, True)
-            set_suheyla_mode(wa_id, False)
-            clear_history(wa_id)
-            remember(wa_id, "user", text)
-            reply = "Baslattim. Artik Mustafa persona ile konusabilirsin."
-            remember(wa_id, "assistant", reply)
-            try:
-                await send_whatsapp_text(wa_id, reply)
-            except httpx.HTTPError:
-                pass
-            continue
-
-        if is_stop_phrase(text):
-            set_active(wa_id, False)
-            set_suheyla_mode(wa_id, False)
-            clear_history(wa_id)
-            reply = "Tamam, bu sohbeti durdurdum. Tekrar baslatmak icin 'hey mustafa, baslat' yaz."
-            try:
-                await send_whatsapp_text(wa_id, reply)
-            except httpx.HTTPError:
-                pass
-            continue
-
-        if not is_active(wa_id):
-            try:
-                await send_whatsapp_text(wa_id, "Baslamak icin 'hey mustafa, baslat' yaz.")
-            except httpx.HTTPError:
-                pass
-            continue
-
-        folded_text = fold_turkish(text)
-        if "ben suheyla" in folded_text:
-            set_suheyla_mode(wa_id, True)
-        elif "ben mustafa" in folded_text or "suheyla degilim" in folded_text:
-            set_suheyla_mode(wa_id, False)
-
-        remember(wa_id, "user", text)
-        schedule_memory_extraction = True
-        memory_write_attempted = has_remember_signal(text)
-        owner_memory_attempted = is_owner_wa_id(wa_id) and memory_write_attempted
-        reply = store_explicit_owner_memory(wa_id, text)
-        if reply is not None:
-            schedule_memory_extraction = False
-        elif owner_memory_attempted:
-            reply = MEMORY_STORE_FAILED_REPLY
-            schedule_memory_extraction = False
-        elif memory_write_attempted and not owner_configured():
-            reply = OWNER_NOT_CONFIGURED_REPLY
-            schedule_memory_extraction = False
-        elif memory_write_attempted:
-            reply = NOT_OWNER_MEMORY_REPLY
-            schedule_memory_extraction = False
-        else:
-            reply = deterministic_reply(text)
-            if reply is not None:
-                schedule_memory_extraction = False
-            else:
-                try:
-                    reply = await ask_ollama(wa_id, text)
-                except httpx.HTTPError as exc:
-                    reply = "Su an local modelden cevap alamiyorum. Birazdan tekrar dener misin?"
-                    print(json.dumps({"error": str(exc), "wa_id": wa_id}))
-        remember(wa_id, "assistant", reply)
-        if schedule_memory_extraction:
-            background_tasks.add_task(extract_and_store_memory, wa_id, text, reply)
-            print(json.dumps({"event": "memory_task_scheduled", "user_hash": user_hash(wa_id)}))
-        try:
-            await send_whatsapp_text(wa_id, reply)
-        except httpx.HTTPError:
-            pass
-
+    update_id = payload.get("update_id")
+    processed_key = f"telegram:{update_id}" if update_id is not None else json.dumps(payload, sort_keys=True)
+    if not already_processed(processed_key):
+        await handle_telegram_update(payload)
     return {"status": "ok"}

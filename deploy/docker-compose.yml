@@ -1,9 +1,9 @@
 services:
-  whatsapp-bot:
+  telegram-bot:
     build:
       context: ..
       dockerfile: app/Dockerfile
-    container_name: whoamai-whatsapp-bot
+    container_name: whoamai-telegram-bot
     restart: unless-stopped
     ports:
       - "8000:8000"

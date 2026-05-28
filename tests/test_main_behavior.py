@@ -41,7 +41,7 @@ def test_load_history_keeps_last_six_messages_in_order_without_latest_user(monke
         """
         CREATE TABLE messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            wa_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -58,7 +58,7 @@ def test_load_history_keeps_last_six_messages_in_order_without_latest_user(monke
         ("user", "current"),
     ]
     for role, content in rows:
-        connection.execute("INSERT INTO messages (wa_id, role, content) VALUES ('wa1', ?, ?)", (role, content))
+        connection.execute("INSERT INTO messages (user_id, role, content) VALUES ('user1', ?, ?)", (role, content))
     connection.commit()
 
     class DbContext:
@@ -71,7 +71,7 @@ def test_load_history_keeps_last_six_messages_in_order_without_latest_user(monke
     monkeypatch.setattr(main, "db", lambda: DbContext())
     monkeypatch.setattr(main.settings, "max_history_messages", 6)
 
-    history = main.load_history("wa1", exclude_latest_user_text="current")
+    history = main.load_history("user1", exclude_latest_user_text="current")
 
     assert history == [
         {"role": "assistant", "content": "a1"},

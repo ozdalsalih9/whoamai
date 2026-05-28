@@ -4,5 +4,5 @@ services:
     container_name: whoamai-cloudflared
     restart: unless-stopped
     depends_on:
-      - whatsapp-bot
-    command: tunnel --no-autoupdate --url http://whatsapp-bot:8000
+      - telegram-bot
+    command: tunnel --no-autoupdate --url http://telegram-bot:8000

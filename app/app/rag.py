@@ -157,9 +157,9 @@ class ChromaMemory:
     ) -> str:
         metadata: dict[str, Any] = {
             "scope": "chat_memory",
-            "source": "whatsapp_chat",
+            "source": "telegram_chat",
             "timestamp": timestamp,
-            "title": "WhatsApp Memory",
+            "title": "Telegram Memory",
             "user_hash": user_hash,
             "memory_kind": memory_kind,
             "visibility": visibility,
@@ -331,7 +331,7 @@ class ChromaMemory:
 
     @staticmethod
     def _memory_id(text: str, timestamp: str) -> str:
-        digest = hashlib.sha256(f"whatsapp_chat:{timestamp}:{text}".encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(f"telegram_chat:{timestamp}:{text}".encode("utf-8")).hexdigest()
         return f"mem_{digest[:28]}"
 
     @staticmethod
@@ -340,7 +340,7 @@ class ChromaMemory:
             return False
         if metadata.get("scope") == "persona":
             return True
-        return metadata.get("source") == source_name and metadata.get("source") != "whatsapp_chat"
+        return metadata.get("source") == source_name and metadata.get("source") not in {"whatsapp_chat", "telegram_chat"}
 
     @classmethod
     def _is_expired(cls, metadata: Any, now_ts: float | None) -> bool:

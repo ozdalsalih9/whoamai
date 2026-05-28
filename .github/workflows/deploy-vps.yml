@@ -89,9 +89,9 @@ jobs:
               sleep "$delay_seconds"
             done
 
-            echo "::error::WhatsApp bot health check failed after ${attempts} attempts."
-            docker ps -a --filter "name=whoamai-whatsapp-bot"
-            docker logs --tail=160 whoamai-whatsapp-bot || true
+            echo "::error::Telegram bot health check failed after ${attempts} attempts."
+            docker ps -a --filter "name=whoamai-telegram-bot"
+            docker logs --tail=160 whoamai-telegram-bot || true
             return 1
           }
 
@@ -103,7 +103,9 @@ jobs:
             COMPOSE_FILES="$COMPOSE_FILES -f deploy/docker-compose.tunnel.yml"
           fi
 
-          # Do not use --remove-orphans here. The webhook may depend on an existing
+          docker rm -f whoamai-whatsapp-bot >/dev/null 2>&1 || true
+
+          # Do not use --remove-orphans here. Webhook mode may depend on an existing
           # tunnel/reverse-proxy container that is intentionally managed separately.
           docker compose $COMPOSE_FILES up -d --build
           wait_for_health 40 3
@@ -116,9 +118,9 @@ jobs:
           fi
 
           wait_for_health 20 3
-          docker ps --filter "name=whoamai-whatsapp-bot" --filter "status=running" --format "{{.Names}}" | grep -q '^whoamai-whatsapp-bot$'
+          docker ps --filter "name=whoamai-telegram-bot" --filter "status=running" --format "{{.Names}}" | grep -q '^whoamai-telegram-bot$'
           if [ "$USE_TUNNEL" = "true" ]; then
             docker ps --filter "name=whoamai-cloudflared" --filter "status=running" --format "{{.Names}}" | grep -q '^whoamai-cloudflared$'
           fi
-          docker logs --tail=80 whoamai-whatsapp-bot
+          docker logs --tail=80 whoamai-telegram-bot
           REMOTE
