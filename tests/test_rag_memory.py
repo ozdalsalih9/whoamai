@@ -109,3 +109,29 @@ def test_delete_expired_memories_removes_only_expired_chat_memory(tmp_path) -> N
     assert deleted == 1
     assert "aktif plan" in active
     assert "eski plan" not in active
+
+
+def test_global_relationship_memory_is_listed_by_metadata(tmp_path) -> None:
+    memory = ChromaMemory(
+        persist_path=str(tmp_path / "chroma"),
+        collection_name="test_relationships",
+        embedder=StaticEmbedder(),
+        max_context_chars=1000,
+        min_score=0.0,
+    )
+
+    memory.add_chat_memory(
+        "Mustafa sunu hatirlamami istedi: Eren Mustafa'nin arkadasidir.",
+        "2026-01-01T12:00:00",
+        user_hash="owner_a",
+        memory_kind="relationship",
+        visibility="global",
+        person_key="eren",
+        person_name="Eren",
+        relationship="friend",
+        owner_hash="owner_a",
+    )
+
+    relationships = memory.get_global_relationships(now_ts=2000.0)
+
+    assert relationships == [{"person_key": "eren", "person_name": "Eren", "relationship": "friend"}]

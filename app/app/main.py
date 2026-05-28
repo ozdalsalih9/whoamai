@@ -288,6 +288,13 @@ class ResponseRule:
     answer_text: str
 
 
+@dataclass(frozen=True)
+class RelationshipMemory:
+    person_name: str
+    person_key: str
+    relationship: str
+
+
 def normalize_text(value: str) -> str:
     value = value.strip().lower()
     value = unicodedata.normalize("NFKC", value)
@@ -391,8 +398,40 @@ def normalize_rule_text(value: str) -> str:
     return " ".join(stripped.split())
 
 
+def normalize_person_name(value: str) -> str:
+    cleaned = normalize_rule_text(value)
+    cleaned = re.sub(r"\b(bey|hanim|abi|abla|kanka|reis)$", "", cleaned, flags=re.IGNORECASE).strip()
+    return " ".join(cleaned.split())
+
+
+def person_key(value: str) -> str:
+    return fold_turkish(normalize_person_name(value)).strip(" ?!.")
+
+
 def response_rule_key(value: str) -> str:
     return fold_turkish(normalize_rule_text(value)).strip(" ?!.")
+
+
+def parse_relationship_memory(user_text: str) -> RelationshipMemory | None:
+    cleaned = strip_memory_directives(user_text)
+    patterns: tuple[tuple[str, str], ...] = (
+        (r"^(.+?)\s+benim\s+(?:yak[ıi]n\s+)?arkada[sş][ıi]m\b", "friend"),
+        (r"^(.+?)\s+okuldan\s+arkada[sş][ıi]m\b", "friend"),
+        (r"^(.+?)\s+(?:yak[ıi]n\s+)?arkada[sş][ıi]m\b", "friend"),
+        (r"^(.+?)\s+kuzenim\b", "family"),
+        (r"^(.+?)\s+karde[sş]im\b", "family"),
+        (r"^(.+?)\s+abim\b", "family"),
+        (r"^(.+?)\s+ablam\b", "family"),
+    )
+    for pattern, relationship in patterns:
+        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+        if not match:
+            continue
+        name = normalize_person_name(match.group(1))
+        key = person_key(name)
+        if key and 1 <= len(key.split()) <= 3:
+            return RelationshipMemory(person_name=name, person_key=key, relationship=relationship)
+    return None
 
 
 def parse_response_rule(user_text: str) -> ResponseRule | None:
@@ -410,6 +449,24 @@ def parse_response_rule(user_text: str) -> ResponseRule | None:
         question_key = response_rule_key(question_text)
         if question_key and answer_text:
             return ResponseRule(question_text=question_text, question_key=question_key, answer_text=answer_text)
+    return None
+
+
+def parse_identity_claim(user_text: str) -> str | None:
+    cleaned = normalize_rule_text(user_text)
+    patterns = (
+        r"^ben\s+(.+?)(?:['’]?(?:im|ım|um|üm|yim|yım|yum|yüm))?$",
+        r"^ad[ıi]m\s+(.+)$",
+        r"^ismim\s+(.+)$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+        if not match:
+            continue
+        name = normalize_person_name(match.group(1))
+        key = person_key(name)
+        if key and 1 <= len(key.split()) <= 3:
+            return key
     return None
 
 
@@ -658,6 +715,13 @@ def parse_memory_timing(user_text: str, now: datetime | None = None) -> MemoryTi
 
 
 def build_memory_text(user_text: str) -> str:
+    relationship = parse_relationship_memory(user_text)
+    if relationship is not None:
+        if relationship.relationship == "friend":
+            return f"Mustafa sunu hatirlamami istedi: {relationship.person_name} Mustafa'nin arkadasidir."
+        if relationship.relationship == "family":
+            return f"Mustafa sunu hatirlamami istedi: {relationship.person_name} Mustafa'nin ailesindendir."
+
     rule = parse_response_rule(user_text)
     if rule is not None:
         return f"Mustafa bu soru geldiginde soyle cevap verir: Soru: {rule.question_text}. Cevap: {rule.answer_text}."
@@ -769,6 +833,33 @@ def learned_response_reply(user_text: str, now: datetime | None = None) -> str |
     return None
 
 
+def identity_relationship_reply(user_text: str, now: datetime | None = None) -> str | None:
+    if memory is None:
+        return None
+
+    claimed_key = parse_identity_claim(user_text)
+    if not claimed_key:
+        return None
+
+    current = now or now_istanbul()
+    try:
+        relationships = memory.get_global_relationships(now_ts=current.timestamp())
+    except Exception as exc:
+        print(json.dumps({"event": "relationship_retrieve_failed", "error": str(exc)}))
+        return None
+
+    for relationship in relationships:
+        stored_key = person_key(relationship.get("person_key", ""))
+        if stored_key != claimed_key:
+            continue
+        relation = relationship.get("relationship", "")
+        if relation == "friend":
+            return "naber kanka"
+        if relation == "family":
+            return "hos geldin"
+    return None
+
+
 def deterministic_reply(user_text: str) -> str | None:
     if has_remember_signal(user_text):
         return None
@@ -776,6 +867,10 @@ def deterministic_reply(user_text: str) -> str | None:
     learned = learned_response_reply(user_text)
     if learned is not None:
         return learned
+
+    relationship = identity_relationship_reply(user_text)
+    if relationship is not None:
+        return relationship
 
     profile_fact = profile_fact_reply(user_text)
     if profile_fact is not None:
@@ -1025,9 +1120,12 @@ def store_explicit_owner_memory(user_id: str, user_text: str, now: datetime | No
 
     current = now or now_istanbul()
     rule = parse_response_rule(user_text)
+    relationship = parse_relationship_memory(user_text)
     timing = (
         MemoryTiming(memory_kind="response_rule", event_at=None, expires_at=None)
         if rule is not None
+        else MemoryTiming(memory_kind="relationship", event_at=None, expires_at=None)
+        if relationship is not None
         else parse_memory_timing(user_text, now=current)
     )
     timestamp = current.isoformat()
@@ -1046,6 +1144,9 @@ def store_explicit_owner_memory(user_id: str, user_text: str, now: datetime | No
             question_key=rule.question_key if rule is not None else None,
             question_text=rule.question_text if rule is not None else None,
             answer_text=rule.answer_text if rule is not None else None,
+            person_key=relationship.person_key if relationship is not None else None,
+            person_name=relationship.person_name if relationship is not None else None,
+            relationship=relationship.relationship if relationship is not None else None,
         )
     except Exception as exc:
         print(json.dumps({"event": "owner_memory_store_failed", "error": str(exc)}, ensure_ascii=False))

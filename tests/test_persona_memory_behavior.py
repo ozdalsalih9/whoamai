@@ -9,10 +9,12 @@ class CapturingMemory:
         global_plan_context: str = "",
         global_memory_context: str = "",
         response_rules: list[dict[str, str]] | None = None,
+        relationships: list[dict[str, str]] | None = None,
     ) -> None:
         self.global_plan_context = global_plan_context
         self.global_memory_context = global_memory_context
         self.response_rules = response_rules or []
+        self.relationships = relationships or []
         self.added: list[dict[str, object]] = []
         self.deleted_at: list[float] = []
 
@@ -39,6 +41,9 @@ class CapturingMemory:
 
     def get_global_response_rules(self, now_ts: float | None = None) -> list[dict[str, str]]:
         return self.response_rules
+
+    def get_global_relationships(self, now_ts: float | None = None) -> list[dict[str, str]]:
+        return self.relationships
 
 
 def test_deterministic_short_replies(monkeypatch) -> None:
@@ -77,6 +82,25 @@ def test_learned_response_rule_overrides_default(monkeypatch) -> None:
     )
 
     assert main.deterministic_reply("Naber?") == "iyi kanka yuvarlanip gidioz"
+
+
+def test_identity_claim_uses_learned_friend_relationship(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main,
+        "memory",
+        CapturingMemory(
+            relationships=[
+                {
+                    "person_key": main.person_key("Eren"),
+                    "person_name": "Eren",
+                    "relationship": "friend",
+                }
+            ]
+        ),
+    )
+
+    assert main.deterministic_reply("Ben Eren") == "naber kanka"
+    assert main.deterministic_reply("Ben Eren'im") == "naber kanka"
 
 
 def test_profile_questions_use_persona_knowledge() -> None:
@@ -180,6 +204,24 @@ def test_response_rule_memory_is_stored_with_question_metadata(monkeypatch) -> N
     assert stored["question_key"] == main.response_rule_key("Naber?")
     assert stored["answer_text"] == "iyi kanka yuvarlanip gidioz"
     assert "Soru: Naber" in str(stored["text"])
+
+
+def test_relationship_memory_is_stored_with_person_metadata(monkeypatch) -> None:
+    fake_memory = CapturingMemory()
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=main.ISTANBUL_TZ)
+    monkeypatch.setattr(main, "memory", fake_memory)
+    monkeypatch.setattr(main.settings, "owner_telegram_ids", "owner-user")
+
+    reply = main.store_explicit_owner_memory("owner-user", "Eren benim arkadaşım, unutma", now=now)
+
+    assert reply == main.GLOBAL_MEMORY_REPLY
+    stored = fake_memory.added[0]
+    assert stored["memory_kind"] == "relationship"
+    assert stored["visibility"] == "global"
+    assert stored["person_key"] == main.person_key("Eren")
+    assert stored["person_name"] == "Eren"
+    assert stored["relationship"] == "friend"
+    assert "Eren Mustafa'nin arkadasidir" in str(stored["text"])
 
 
 def test_explicit_memory_with_time_is_plan_without_action_keyword(monkeypatch) -> None:

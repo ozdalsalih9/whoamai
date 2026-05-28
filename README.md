@@ -40,6 +40,7 @@ Implemented so far:
 - Owner-only global Mustafa memory through `OWNER_TELEGRAM_IDS`.
 - Expiring global plan memory for phrases like `30 dakika sonra`, `bugun saat 17:30`, `yarin`, weekdays, `bu hafta`, `haftaya`, and `ay sonu`.
 - Learned response-rule memory, for example `Ben "Naber?" sorusuna "iyi kanka" diye cevap veririm, unutma`.
+- Learned relationship memory, for example `Eren benim arkadasim, unutma`.
 - Deterministic guardrail replies for common messages such as `Naber?`, praise messages, profile facts, self-introduction, and plan queries.
 - Reply cleanup that removes repeated sentences, classic AI helper closers, off-topic Suheyla references, and banned humanization/assistant fragments.
 - Local Docker bootstrap for Windows.
@@ -95,6 +96,7 @@ chmod +x deploy/switch-to-4b-model.sh
 - New long-term facts from Telegram chats can be extracted in the background and inserted into the same Chroma collection with `scope=chat_memory`.
 - `OWNER_TELEGRAM_IDS` marks Mustafa's own Telegram user/chat IDs. Explicit owner messages like `unutma`, `aklinda tut`, `not al`, `hatirla`, or `kaydet` are stored as global Mustafa memory.
 - Owner messages can store dated plans and taught response rules, for example `Ben "Naber?" sorusuna "iyi kanka" diye cevap veririm, unutma`.
+- Owner messages can store relationships, for example `Eren benim arkadasim, unutma`; later `Ben Eren` receives a friend-tone deterministic reply.
 - Persona Markdown chunks use `scope=persona`; private chat memories are retrieved only for the hashed Telegram chat/user.
 - Global owner memories use `visibility=global` and can be retrieved by other active chats when directly relevant.
 - Temporary plans keep `expires_at_ts`; examples like `30 dakika sonra` or `yarim saat sonra` expire at the stated time.
@@ -154,6 +156,7 @@ Some replies intentionally bypass the LLM:
 - Self-introduction requests are assembled from known persona facts.
 - Plan questions use active global plan memory when there is a matching plan, otherwise they return the no-plan fallback.
 - Owner-taught response rules override the defaults when the normalized question matches.
+- If someone identifies as a learned friend, for example `Ben Eren`, the bot replies with a short friend-tone response such as `naber kanka`.
 
 ## Required Telegram Values
 

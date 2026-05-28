@@ -154,6 +154,9 @@ class ChromaMemory:
         question_key: str | None = None,
         question_text: str | None = None,
         answer_text: str | None = None,
+        person_key: str | None = None,
+        person_name: str | None = None,
+        relationship: str | None = None,
     ) -> str:
         metadata: dict[str, Any] = {
             "scope": "chat_memory",
@@ -178,6 +181,12 @@ class ChromaMemory:
             metadata["question_text"] = question_text
         if answer_text is not None:
             metadata["answer_text"] = answer_text
+        if person_key is not None:
+            metadata["person_key"] = person_key
+        if person_name is not None:
+            metadata["person_name"] = person_name
+        if relationship is not None:
+            metadata["relationship"] = relationship
 
         return self.add_memory(text, metadata)
 
@@ -287,6 +296,31 @@ class ChromaMemory:
                     }
                 )
         return rules
+
+    def get_global_relationships(self, now_ts: float | None = None) -> list[dict[str, str]]:
+        if self.count() == 0:
+            return []
+
+        result = self.collection.get(where={"scope": "chat_memory"}, include=["metadatas"])
+        relationships: list[dict[str, str]] = []
+        for metadata in result.get("metadatas", []):
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("visibility") != "global" or metadata.get("memory_kind") != "relationship":
+                continue
+            if self._is_expired(metadata, now_ts):
+                continue
+            stored_person_key = metadata.get("person_key")
+            stored_relationship = metadata.get("relationship")
+            if isinstance(stored_person_key, str) and isinstance(stored_relationship, str):
+                relationships.append(
+                    {
+                        "person_key": stored_person_key,
+                        "person_name": str(metadata.get("person_name", "")),
+                        "relationship": stored_relationship,
+                    }
+                )
+        return relationships
 
     def delete_expired_memories(self, now_ts: float) -> int:
         if self.count() == 0:
