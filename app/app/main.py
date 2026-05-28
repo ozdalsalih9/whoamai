@@ -249,6 +249,9 @@ BANNED_REPLY_FRAGMENTS = (
 ISTANBUL_TZ = ZoneInfo("Europe/Istanbul")
 GLOBAL_MEMORY_REPLY = "Tamam, bunu not aldim."
 MEMORY_STORE_FAILED_REPLY = "Su an not alamadim."
+UNSUPPORTED_RESPONSE_RULE_REPLY = (
+    "Bu cevap kuralini kaydetmedim. Isimler icin 'Kadir benim arkadasim, unutma' gibi ogretmek daha dogru."
+)
 OWNER_NOT_CONFIGURED_REPLY = "Global hafiza icin OWNER_TELEGRAM_IDS ayarli degil."
 NOT_OWNER_MEMORY_REPLY = "Bunu global hafizaya kaydedemem."
 STATUS_REPLY = "iyi kanka yuvarlan\u0131p gidioz"
@@ -412,6 +415,36 @@ def response_rule_key(value: str) -> str:
     return fold_turkish(normalize_rule_text(value)).strip(" ?!.")
 
 
+def is_allowed_response_rule_question(question_text: str) -> bool:
+    question_key = response_rule_key(question_text)
+    if not question_key:
+        return False
+    if is_basic_status_message(question_text):
+        return True
+    if "?" in question_text:
+        return True
+    if len(question_key.split()) < 2:
+        return False
+    question_markers = (
+        "ne",
+        "nasil",
+        "hangi",
+        "kac",
+        "kim",
+        "nerede",
+        "nereye",
+        "neden",
+        "niye",
+        "mi",
+        "misin",
+        "musun",
+        "miyim",
+        "var mi",
+        "planin",
+    )
+    return any(re.search(rf"\b{re.escape(marker)}\b", question_key) for marker in question_markers)
+
+
 def parse_relationship_memory(user_text: str) -> RelationshipMemory | None:
     cleaned = strip_memory_directives(user_text)
     patterns: tuple[tuple[str, str], ...] = (
@@ -434,7 +467,7 @@ def parse_relationship_memory(user_text: str) -> RelationshipMemory | None:
     return None
 
 
-def parse_response_rule(user_text: str) -> ResponseRule | None:
+def parse_raw_response_rule(user_text: str) -> ResponseRule | None:
     cleaned = strip_memory_directives(user_text)
     patterns = (
         r"^ben\s+(.+?)\s+sorusuna\s+(.+?)\s+(?:diye|seklinde|şeklinde)\s+cevap\s+veririm\b",
@@ -450,6 +483,13 @@ def parse_response_rule(user_text: str) -> ResponseRule | None:
         if question_key and answer_text:
             return ResponseRule(question_text=question_text, question_key=question_key, answer_text=answer_text)
     return None
+
+
+def parse_response_rule(user_text: str) -> ResponseRule | None:
+    rule = parse_raw_response_rule(user_text)
+    if rule is None or not is_allowed_response_rule_question(rule.question_text):
+        return None
+    return rule
 
 
 def parse_identity_claim(user_text: str) -> str | None:
@@ -822,11 +862,17 @@ def learned_response_reply(user_text: str, now: datetime | None = None) -> str |
 
     for rule in rules:
         question_key = response_rule_key(rule.get("question_key", ""))
+        question_text = rule.get("question_text", "") or question_key
+        if not is_allowed_response_rule_question(question_text):
+            continue
         if query_key == question_key:
             return rule.get("answer_text", "").strip() or None
 
     for rule in rules:
         question_key = response_rule_key(rule.get("question_key", ""))
+        question_text = rule.get("question_text", "") or question_key
+        if not is_allowed_response_rule_question(question_text):
+            continue
         if question_key and (question_key in query_key or query_key in question_key):
             return rule.get("answer_text", "").strip() or None
 
@@ -1119,7 +1165,10 @@ def store_explicit_owner_memory(user_id: str, user_text: str, now: datetime | No
         return None
 
     current = now or now_istanbul()
+    raw_rule = parse_raw_response_rule(user_text)
     rule = parse_response_rule(user_text)
+    if raw_rule is not None and rule is None:
+        return UNSUPPORTED_RESPONSE_RULE_REPLY
     relationship = parse_relationship_memory(user_text)
     timing = (
         MemoryTiming(memory_kind="response_rule", event_at=None, expires_at=None)

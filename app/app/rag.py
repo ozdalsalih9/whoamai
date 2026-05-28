@@ -367,6 +367,8 @@ class ChromaMemory:
         for document, distance, metadata in zip(documents, distances, metadatas):
             if self._is_expired(metadata, now_ts):
                 continue
+            if isinstance(metadata, dict) and metadata.get("memory_kind") == "response_rule":
+                continue
             score = max(0.0, 1.0 - float(distance))
             if score < self.min_score:
                 continue

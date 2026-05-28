@@ -39,7 +39,7 @@ Implemented so far:
 - Private per-user chat memory extraction from Telegram messages.
 - Owner-only global Mustafa memory through `OWNER_TELEGRAM_IDS`.
 - Expiring global plan memory for phrases like `30 dakika sonra`, `bugun saat 17:30`, `yarin`, weekdays, `bu hafta`, `haftaya`, and `ay sonu`.
-- Learned response-rule memory, for example `Ben "Naber?" sorusuna "iyi kanka" diye cevap veririm, unutma`.
+- Learned response-rule memory for real question/status prompts, for example `Ben "Naber?" sorusuna "iyi kanka" diye cevap veririm, unutma`.
 - Learned relationship memory, for example `Eren benim arkadasim, unutma`.
 - Deterministic guardrail replies for common messages such as `Naber?`, praise messages, profile facts, self-introduction, and plan queries.
 - Reply cleanup that removes repeated sentences, classic AI helper closers, off-topic Suheyla references, and banned humanization/assistant fragments.
@@ -95,7 +95,7 @@ chmod +x deploy/switch-to-4b-model.sh
 - Markdown knowledge is chunked into ChromaDB and retrieved only when semantically relevant.
 - New long-term facts from Telegram chats can be extracted in the background and inserted into the same Chroma collection with `scope=chat_memory`.
 - `OWNER_TELEGRAM_IDS` marks Mustafa's own Telegram user/chat IDs. Explicit owner messages like `unutma`, `aklinda tut`, `not al`, `hatirla`, or `kaydet` are stored as global Mustafa memory.
-- Owner messages can store dated plans and taught response rules, for example `Ben "Naber?" sorusuna "iyi kanka" diye cevap veririm, unutma`.
+- Owner messages can store dated plans and taught response rules for real question/status prompts, for example `Ben "Naber?" sorusuna "iyi kanka" diye cevap veririm, unutma`. Bare names such as `Kadir` should be taught as relationships instead, for example `Kadir benim arkadasim, unutma`.
 - Owner messages can store relationships, for example `Eren benim arkadasim, unutma`; later `Ben Eren` receives a friend-tone deterministic reply.
 - Persona Markdown chunks use `scope=persona`; private chat memories are retrieved only for the hashed Telegram chat/user.
 - Global owner memories use `visibility=global` and can be retrieved by other active chats when directly relevant.

@@ -206,6 +206,41 @@ def test_response_rule_memory_is_stored_with_question_metadata(monkeypatch) -> N
     assert "Soru: Naber" in str(stored["text"])
 
 
+def test_response_rule_memory_rejects_bare_name_trigger(monkeypatch) -> None:
+    fake_memory = CapturingMemory()
+    now = datetime(2026, 5, 25, 12, 0, tzinfo=main.ISTANBUL_TZ)
+    monkeypatch.setattr(main, "memory", fake_memory)
+    monkeypatch.setattr(main.settings, "owner_telegram_ids", "owner-user")
+
+    reply = main.store_explicit_owner_memory(
+        "owner-user",
+        'Ben "Kadir" sorusuna "naber kanka" diye cevap veririm, unutma',
+        now=now,
+    )
+
+    assert reply == main.UNSUPPORTED_RESPONSE_RULE_REPLY
+    assert fake_memory.added == []
+    assert main.deterministic_reply("Kadir") is None
+
+
+def test_existing_invalid_response_rule_is_ignored(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main,
+        "memory",
+        CapturingMemory(
+            response_rules=[
+                {
+                    "question_key": main.response_rule_key("Kadir"),
+                    "question_text": "Kadir",
+                    "answer_text": "naber kanka",
+                }
+            ]
+        ),
+    )
+
+    assert main.deterministic_reply("Kadir") is None
+
+
 def test_relationship_memory_is_stored_with_person_metadata(monkeypatch) -> None:
     fake_memory = CapturingMemory()
     now = datetime(2026, 5, 25, 12, 0, tzinfo=main.ISTANBUL_TZ)
