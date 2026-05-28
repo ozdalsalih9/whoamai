@@ -95,6 +95,7 @@ jobs:
 
           echo "Deploying from $APP_DIR as $(whoami)."
           cd "$APP_DIR"
+          git config --global --add safe.directory "$APP_DIR"
 
           wait_for_health() {
             local attempts="${1:-30}"
@@ -115,7 +116,11 @@ jobs:
             return 1
           }
 
-          git remote set-url origin https://github.com/ozdalsalih9/whoamai.git
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin https://github.com/ozdalsalih9/whoamai.git
+          else
+            git remote add origin https://github.com/ozdalsalih9/whoamai.git
+          fi
           git fetch origin main
           git checkout main
           git pull --ff-only origin main
