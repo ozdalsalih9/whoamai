@@ -116,14 +116,9 @@ jobs:
             return 1
           }
 
-          if git remote get-url origin >/dev/null 2>&1; then
-            git remote set-url origin https://github.com/ozdalsalih9/whoamai.git
-          else
-            git remote add origin https://github.com/ozdalsalih9/whoamai.git
-          fi
-          git fetch origin main
-          git checkout main
-          git pull --ff-only origin main
+          git fetch --prune https://github.com/ozdalsalih9/whoamai.git main
+          git checkout main || git checkout -b main
+          git merge --ff-only FETCH_HEAD
 
           COMPOSE_FILES="-f deploy/docker-compose.yml"
           if [ "$USE_TUNNEL" = "true" ]; then
