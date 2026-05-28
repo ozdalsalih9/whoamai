@@ -63,17 +63,37 @@ jobs:
             echo "::error::Missing VPS_HOST. Add it as a Repository secret or Repository variable named VPS_HOST."
             exit 1
           fi
-          if [ -z "${VPS_USER:-}" ]; then
-            echo "::error::Missing VPS_USER. Add it as a Repository secret or Repository variable named VPS_USER."
-            exit 1
-          fi
+          VPS_USER="${VPS_USER:-root}"
 
           ssh -p "$VPS_PORT" -i ~/.ssh/whoamai_vps_key "$VPS_USER@$VPS_HOST" \
             'bash -s' -- "$VPS_APP_DIR" "${VPS_USE_TUNNEL:-false}" <<'REMOTE'
           set -euo pipefail
 
-          APP_DIR="${1:-$HOME/whoamai}"
+          APP_DIR_INPUT="${1:-}"
           USE_TUNNEL="${2:-false}"
+          APP_DIR=""
+
+          for candidate in \
+            "$APP_DIR_INPUT" \
+            "$HOME/whoamai" \
+            "$HOME/WhoAmAI" \
+            "/root/whoamai" \
+            "/root/WhoAmAI"
+          do
+            if [ -n "$candidate" ] && [ -d "$candidate/.git" ]; then
+              APP_DIR="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$APP_DIR" ]; then
+            APP_DIR="${APP_DIR_INPUT:-$HOME/whoamai}"
+            echo "No existing checkout found. Cloning repository into $APP_DIR."
+            mkdir -p "$(dirname "$APP_DIR")"
+            git clone https://github.com/ozdalsalih9/whoamai.git "$APP_DIR"
+          fi
+
+          echo "Deploying from $APP_DIR as $(whoami)."
           cd "$APP_DIR"
 
           wait_for_health() {
@@ -95,7 +115,9 @@ jobs:
             return 1
           }
 
+          git remote set-url origin https://github.com/ozdalsalih9/whoamai.git
           git fetch origin main
+          git checkout main
           git pull --ff-only origin main
 
           COMPOSE_FILES="-f deploy/docker-compose.yml"
