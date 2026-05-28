@@ -69,7 +69,9 @@ apply_runtime_env_defaults() {
   set_env_default OLLAMA_TOP_P 0.85
   set_env_default OLLAMA_REPEAT_PENALTY 1.03
   set_env_default OLLAMA_NUM_PREDICT 180
+  set_env_default OLLAMA_KEEP_ALIVE 30m
   set_env_positive_default OLLAMA_NUM_THREAD "$(physical_core_count)"
   set_env_default MAX_HISTORY_MESSAGES 6
   set_env_default PROCESSED_MESSAGE_RETENTION_DAYS 7
+  set_env_default MEMORY_CLEANUP_INTERVAL_SECONDS 300
 }

@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     ollama_repeat_penalty: float = 1.03
     ollama_num_predict: int = 180
     ollama_num_thread: int = 0
+    ollama_keep_alive: str = "30m"
     persona_knowledge_path: str = "/app/knowledge/mustafa_persona.md"
     chroma_path: str = "/app/data/chroma"
     chroma_collection: str = "mustafa_persona"
@@ -38,6 +39,7 @@ class Settings(BaseSettings):
     rag_top_k: int = 2
     rag_max_context_chars: int = 800
     rag_min_score: float = 0.35
+    memory_cleanup_interval_seconds: int = 300
     memory_extraction_enabled: bool = True
     memory_extraction_model: str = "mustafa-persona:0.6b"
     memory_extraction_num_ctx: int = 512
@@ -58,6 +60,7 @@ settings = Settings()
 app = FastAPI(title="WhoAmAI Telegram Bot")
 memory: ChromaMemory | None = None
 telegram_polling_task: asyncio.Task[None] | None = None
+last_expired_memory_cleanup_ts = 0.0
 
 TURKISH_CHAR_MAP = str.maketrans(
     {
@@ -321,6 +324,21 @@ def is_owner_user_id(user_id: str) -> bool:
 def telegram_token_configured() -> bool:
     token = settings.telegram_bot_token.strip()
     return bool(token) and not token.startswith("change-this-")
+
+
+def cleanup_expired_memories(now_ts: float, *, force: bool = False) -> None:
+    global last_expired_memory_cleanup_ts
+    if memory is None:
+        return
+
+    interval = max(settings.memory_cleanup_interval_seconds, 0)
+    if not force and interval > 0 and now_ts - last_expired_memory_cleanup_ts < interval:
+        return
+
+    deleted = memory.delete_expired_memories(now_ts)
+    last_expired_memory_cleanup_ts = now_ts
+    if deleted:
+        print(json.dumps({"event": "expired_memories_deleted", "count": deleted}))
 
 
 def has_remember_signal(user_text: str) -> bool:
@@ -704,7 +722,7 @@ def active_global_plan_reply(query: str = "", now: datetime | None = None) -> st
     current = now or now_istanbul()
     now_ts = current.timestamp()
     try:
-        memory.delete_expired_memories(now_ts)
+        cleanup_expired_memories(now_ts)
         context = memory.retrieve_active_global_plans(top_k=5, now_ts=now_ts)
         if query and mentioned_weekday(query) is not None:
             global_context = memory.retrieve_global_memory(query, top_k=5, now_ts=now_ts)
@@ -1106,8 +1124,13 @@ async def ask_ollama(user_id: str, user_text: str) -> str:
     if memory is not None:
         try:
             now_ts = now_istanbul().timestamp()
-            memory.delete_expired_memories(now_ts)
-            persona_context = memory.retrieve_persona(user_text, top_k=settings.rag_top_k)
+            cleanup_expired_memories(now_ts)
+            query_embedding = memory.embedder.embed([user_text])[0]
+            persona_context = memory.retrieve_persona(
+                user_text,
+                top_k=settings.rag_top_k,
+                query_embedding=query_embedding,
+            )
             global_plan_context = (
                 memory.retrieve_active_global_plans(top_k=1, now_ts=now_ts) if is_plan_query(user_text) else ""
             )
@@ -1115,12 +1138,14 @@ async def ask_ollama(user_id: str, user_text: str) -> str:
                 user_text,
                 top_k=settings.rag_top_k,
                 now_ts=now_ts,
+                query_embedding=query_embedding,
             )
             chat_context = memory.retrieve_chat_memory(
                 user_text,
                 user_hash=user_hash(user_id),
                 top_k=settings.rag_top_k,
                 now_ts=now_ts,
+                query_embedding=query_embedding,
             )
             rag_sections = [
                 section
@@ -1142,6 +1167,7 @@ async def ask_ollama(user_id: str, user_text: str) -> str:
         "think": settings.ollama_think,
         "messages": messages,
         "options": ollama_options(),
+        "keep_alive": settings.ollama_keep_alive,
     }
 
     async with httpx.AsyncClient(timeout=180) as client:

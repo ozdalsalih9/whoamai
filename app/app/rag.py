@@ -181,8 +181,19 @@ class ChromaMemory:
 
         return self.add_memory(text, metadata)
 
-    def retrieve_persona(self, query: str, top_k: int = 3) -> str:
-        return self._retrieve(query, top_k=top_k, where={"scope": "persona"}, label="PERSONA")
+    def retrieve_persona(
+        self,
+        query: str,
+        top_k: int = 3,
+        query_embedding: list[float] | None = None,
+    ) -> str:
+        return self._retrieve(
+            query,
+            top_k=top_k,
+            where={"scope": "persona"},
+            label="PERSONA",
+            query_embedding=query_embedding,
+        )
 
     def retrieve_chat_memory(
         self,
@@ -190,6 +201,7 @@ class ChromaMemory:
         user_hash: str,
         top_k: int = 3,
         now_ts: float | None = None,
+        query_embedding: list[float] | None = None,
     ) -> str:
         return self._retrieve(
             query,
@@ -197,15 +209,23 @@ class ChromaMemory:
             where={"$and": [{"scope": "chat_memory"}, {"user_hash": user_hash}]},
             label="CHAT_MEMORY",
             now_ts=now_ts,
+            query_embedding=query_embedding,
         )
 
-    def retrieve_global_memory(self, query: str, top_k: int = 3, now_ts: float | None = None) -> str:
+    def retrieve_global_memory(
+        self,
+        query: str,
+        top_k: int = 3,
+        now_ts: float | None = None,
+        query_embedding: list[float] | None = None,
+    ) -> str:
         return self._retrieve(
             query,
             top_k=top_k,
             where={"$and": [{"scope": "chat_memory"}, {"visibility": "global"}]},
             label="GLOBAL_MEMORY",
             now_ts=now_ts,
+            query_embedding=query_embedding,
         )
 
     def retrieve(self, query: str, top_k: int = 3) -> str:
@@ -289,12 +309,14 @@ class ChromaMemory:
         where: dict[str, Any],
         label: str,
         now_ts: float | None = None,
+        query_embedding: list[float] | None = None,
     ) -> str:
         collection_count = self.count()
         if collection_count == 0:
             return ""
 
-        query_embedding = self.embedder.embed([query])[0]
+        if query_embedding is None:
+            query_embedding = self.embedder.embed([query])[0]
         result = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=min(max(top_k * 4, top_k), collection_count),

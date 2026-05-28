@@ -61,6 +61,7 @@ Implemented so far:
 - 4B context when switched through script: `num_ctx 2048`
 - Runtime sampling defaults: `temperature=0.35`, `top_p=0.85`, `repeat_penalty=1.03`, `num_predict=180`
 - Optional CPU thread cap: `OLLAMA_NUM_THREAD`, set to physical core count by VPS scripts when missing or `0`
+- Ollama model residency: `OLLAMA_KEEP_ALIVE=30m`
 - Thinking disabled in API calls: `think=false`
 - Vector DB: ChromaDB in `/app/data/chroma`
 - Bot database: SQLite in `/app/data/whoamai-bot.db`
@@ -97,7 +98,8 @@ chmod +x deploy/switch-to-4b-model.sh
 - Persona Markdown chunks use `scope=persona`; private chat memories are retrieved only for the hashed Telegram chat/user.
 - Global owner memories use `visibility=global` and can be retrieved by other active chats when directly relevant.
 - Temporary plans keep `expires_at_ts`; examples like `30 dakika sonra` or `yarim saat sonra` expire at the stated time.
-- Expired chat memories are deleted before memory retrieval.
+- Expired chat memories are cleaned periodically instead of on every message.
+- RAG retrieval reuses a single query embedding across persona, global memory, and private chat memory lookups.
 - Recent user and assistant messages are kept in SQLite and sent as short conversation history.
 - Deterministic answer paths run before the LLM for simple status, praise, profile, self-intro, plan, and learned response-rule questions.
 
@@ -189,6 +191,7 @@ OLLAMA_TOP_P=0.85
 OLLAMA_REPEAT_PENALTY=1.03
 OLLAMA_NUM_PREDICT=180
 OLLAMA_NUM_THREAD=0
+OLLAMA_KEEP_ALIVE=30m
 PERSONA_KNOWLEDGE_PATH=/app/knowledge/mustafa_persona.md
 CHROMA_PATH=/app/data/chroma
 CHROMA_COLLECTION=mustafa_persona
@@ -196,6 +199,7 @@ EMBEDDING_MODEL=nomic-embed-text
 RAG_TOP_K=2
 RAG_MAX_CONTEXT_CHARS=800
 RAG_MIN_SCORE=0.35
+MEMORY_CLEANUP_INTERVAL_SECONDS=300
 MEMORY_EXTRACTION_ENABLED=true
 MEMORY_EXTRACTION_MODEL=mustafa-persona:0.6b
 MEMORY_EXTRACTION_NUM_CTX=512
