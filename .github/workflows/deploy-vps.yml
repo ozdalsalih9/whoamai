@@ -162,7 +162,14 @@ jobs:
           set -e
 
           if [ "$ssh_status" -ne 0 ]; then
-            deploy_tail="$(tail -n 60 remote-deploy.log | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk '{printf "%s%0A", $0}')"
+            deploy_tail="$(python3 - <<'PY'
+from pathlib import Path
+
+lines = Path("remote-deploy.log").read_text(errors="replace").splitlines()[-60:]
+text = "\n".join(lines)
+print(text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"))
+PY
+)"
             echo "::error title=Deploy over SSH failed::SSH deploy command exited with status $ssh_status.%0A${deploy_tail}"
             exit "$ssh_status"
           fi
