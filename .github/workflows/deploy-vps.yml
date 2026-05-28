@@ -65,8 +65,9 @@ jobs:
           fi
           VPS_USER="${VPS_USER:-root}"
 
+          set +e
           ssh -p "$VPS_PORT" -i ~/.ssh/whoamai_vps_key "$VPS_USER@$VPS_HOST" \
-            'bash -s' -- "$VPS_APP_DIR" "${VPS_USE_TUNNEL:-false}" <<'REMOTE'
+            'bash -s' -- "$VPS_APP_DIR" "${VPS_USE_TUNNEL:-false}" <<'REMOTE' 2>&1 | tee remote-deploy.log
           set -euo pipefail
 
           APP_DIR_INPUT="${1:-}"
@@ -157,3 +158,11 @@ jobs:
           fi
           docker logs --tail=80 whoamai-telegram-bot
           REMOTE
+          ssh_status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$ssh_status" -ne 0 ]; then
+            deploy_tail="$(tail -n 60 remote-deploy.log | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk '{printf "%s%0A", $0}')"
+            echo "::error title=Deploy over SSH failed::SSH deploy command exited with status $ssh_status.%0A${deploy_tail}"
+            exit "$ssh_status"
+          fi
