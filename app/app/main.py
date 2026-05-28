@@ -13,13 +13,15 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI, Request
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.prompt import build_memory_extraction_prompt, build_system_prompt
 from app.rag import ChromaMemory, OllamaEmbedder
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(extra="ignore")
+
     ollama_base_url: str = "http://ollama:11434"
     ollama_model: str = "mustafa-persona:0.6b"
     ollama_num_ctx: int = 1024
